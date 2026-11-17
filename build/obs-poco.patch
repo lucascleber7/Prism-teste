@@ -1,0 +1,634 @@
+From 2d42a9d56eb0643eeab4c447d9cdd53a3cc88ca1 Mon Sep 17 00:00:00 2001
+From: OBS Pad6 Local Dev <obs-pad6@local.invalid>
+Date: Tue, 17 Nov 2026 20:12:15 -0300
+Subject: [PATCH] Android plugin import, PT-BR capture labels and diagnostics
+
+---
+ PLANO_PAD6_CAPTURA_PAD8.md                    |  35 +++++
+ .../AndroidPluginImportValidation.hpp         |  25 ++++
+ .../plugin-manager/PluginManagerWindow.cpp    | 134 ++++++++++++++++++
+ .../plugins/android-audio/aaudio-input.c      |  48 +++----
+ .../android-browser/data/locale/pt-BR.ini     |  17 +++
+ .../plugins/android-camera/camera2-input.c    |  14 +-
+ .../plugins/android-capture/uvc-input.c       |  34 ++---
+ .../android-mediacodec/data/locale/pt-BR.ini  |   4 +
+ .../plugins/android-screen/screen-capture.c   |  20 +--
+ scripts/test-android-plugin-import.cpp        |  33 +++++
+ 10 files changed, 306 insertions(+), 58 deletions(-)
+ create mode 100644 PLANO_PAD6_CAPTURA_PAD8.md
+ create mode 100644 obs-studio/frontend/plugin-manager/AndroidPluginImportValidation.hpp
+ create mode 100644 obs-studio/plugins/android-browser/data/locale/pt-BR.ini
+ create mode 100644 obs-studio/plugins/android-mediacodec/data/locale/pt-BR.ini
+ create mode 100644 scripts/test-android-plugin-import.cpp
+
+diff --git a/PLANO_PAD6_CAPTURA_PAD8.md b/PLANO_PAD6_CAPTURA_PAD8.md
+new file mode 100644
+index 0000000..2f32280
+--- /dev/null
++++ b/PLANO_PAD6_CAPTURA_PAD8.md
+@@ -0,0 +1,35 @@
++# OBS for Android / Xiaomi Pad 6: melhorias locais
++
++## Alterações nesta cópia de desenvolvimento
++
++- Botão para importar módulos ARM64 (arquivos .so) pela seleção de arquivos do Android.
++- Validação básica de ELF64/AArch64, limite de 64 MiB, confirmação de risco antes da importação.
++- Proteção para não substituir os plugins originais do APK e nem os plugins existentes.
++- Botão de diagnóstico que copia a lista dos plugins e tipos de fontes reconhecidos.
++- Tradução para português brasileiro de rótulos dos módulos Android de tela, áudio, câmera e UVC.
++- Arquivos de localização pt-BR para navegador Android e MediaCodec.
++- Testes unitários da validação dos módulos.
++
++## Estado dos testes
++
++- Teste unitário ELF ARM64: aprovado no Termux do Pad 6.
++- Comparação dos identificadores de tradução com en-US: aprovada.
++- `git diff --check`: aprovado.
++- O APK original v0.2.0 não foi alterado.
++- Não houve compilação da nova versão Android: SDK/NDK r30, Qt Android 6.11.1 e Gradle 9.3.1 estão ausentes.
++- Importação real de plugin pelo aplicativo ainda não validada.
++
++## Captura de vídeo do Pad 8 Pro pelo Wi-Fi, sem ADB
++
++- No Pad 6: receptor Termux em `~/obs-dev/start_pad8_srt_receiver.sh`.
++- O script aceita SRT com senha e encaminha o vídeo sem recodificar para a porta UDP local 12345.
++- No OBS for Android: adicionar Fonte de mídia (não arquivo local) com:
++  `udp://127.0.0.1:12345?fifo_size=5000000&overrun_nonfatal=1`
++- No Pad 8 Pro: abrir um transmissor de tela SRT como Larix Screencaster, configurar como Caller e usar o endereço e a senha do receptor; confirmar o pedido de captura de tela do Android.
++- Para ver o endereço atual e a senha, consulte `~/obs-dev/pad8_receiver_console.log` no Termux do Pad 6.
++- O receptor foi testado com vídeo sintético 720p60, não com a tela real do Pad 8 Pro.
++- O Pad 8 Pro ainda não foi identificado e autorizado no acesso remoto.
++
++## Segurança
++
++Plugins .so são código nativo executável: importar apenas arquivos auditados e compilados para esta versão do OBS. Não desabilitar proteções do Android. A senha SRT é privada e deve ser trocada se exposta.
+diff --git a/obs-studio/frontend/plugin-manager/AndroidPluginImportValidation.hpp b/obs-studio/frontend/plugin-manager/AndroidPluginImportValidation.hpp
+new file mode 100644
+index 0000000..b4ceeef
+--- /dev/null
++++ b/obs-studio/frontend/plugin-manager/AndroidPluginImportValidation.hpp
+@@ -0,0 +1,25 @@
++/*
++ * OBS for Android: validation of imported ARM64 shared objects.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++namespace OBS::AndroidPluginImport {
++
++inline constexpr std::size_t maxPluginBytes = 64u * 1024u * 1024u;
++
++inline bool isArm64SharedLibrary(const unsigned char *data, std::size_t size)
++{
++    if (!data || size < 64 || size > maxPluginBytes)
++        return false;
++
++    // ELF64 little-endian, type ET_DYN, CPU AArch64.
++    return data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F' &&
++           data[4] == 2 && data[5] == 1 && data[16] == 3 && data[17] == 0 &&
++           data[18] == 183 && data[19] == 0;
++}
++
++} // namespace OBS::AndroidPluginImport
+diff --git a/obs-studio/frontend/plugin-manager/PluginManagerWindow.cpp b/obs-studio/frontend/plugin-manager/PluginManagerWindow.cpp
+index 15efbba..9a0e926 100755
+--- a/obs-studio/frontend/plugin-manager/PluginManagerWindow.cpp
++++ b/obs-studio/frontend/plugin-manager/PluginManagerWindow.cpp
+@@ -17,6 +17,10 @@
+ 
+ #include "PluginManagerWindow.hpp"
+ 
++#if defined(Q_OS_ANDROID)
++#include "AndroidPluginImportValidation.hpp"
++#endif
++
+ #include <OBSApp.hpp>
+ #include <plugin-manager/InstalledPluginRow.hpp>
+ 
+@@ -34,6 +38,21 @@
+ #include <QTimer>
+ #include <QVBoxLayout>
+ 
++#if defined(Q_OS_ANDROID)
++#include <QByteArray>
++#include <QClipboard>
++#include <QGuiApplication>
++#include <QDir>
++#include <QFile>
++#include <QFileDialog>
++#include <QFileInfo>
++#include <QMessageBox>
++#include <QPointer>
++#include <QRegularExpression>
++#include <QSaveFile>
++#include <cstdlib>
++#endif
++
+ #include "moc_PluginManagerWindow.cpp"
+ 
+ extern bool safe_mode;
+@@ -53,6 +72,75 @@ constexpr int getCategorySortOrder(Category c)
+ 		return 3;
+ 	}
+ }
++#if defined(Q_OS_ANDROID)
++/* Import is deliberately manual. Android's SAF picker reads a file once;
++ * user code is copied only into this application's private plugin directory.
++ * A plugin is executable native code and therefore needs explicit consent.
++ */
++bool importAndroidPlugin(const QString &suggestedName, const QByteArray &bytes, QWidget *parent)
++{
++    static const QRegularExpression filenamePattern(
++        QStringLiteral(R"(^[A-Za-z0-9_][A-Za-z0-9_.-]*\.so$)"));
++    const QString name = QFileInfo(suggestedName).fileName();
++    if (!filenamePattern.match(name).hasMatch() || name == QStringLiteral(".so")) {
++        QMessageBox::warning(parent, QStringLiteral("Plugin inválido"),
++                             QStringLiteral("Selecione um plugin .so para Android ARM64."));
++        return false;
++    }
++    // ELF64 little-endian shared object (ET_DYN), e_machine=AArch64 (183).
++    if (!OBS::AndroidPluginImport::isArm64SharedLibrary(
++            reinterpret_cast<const unsigned char *>(bytes.constData()),
++            static_cast<std::size_t>(bytes.size()))) {
++        QMessageBox::warning(parent, QStringLiteral("Plugin incompatível"),
++                             QStringLiteral("O arquivo precisa ser uma biblioteca ELF ARM64 de até 64 MB."));
++        return false;
++    }
++    const char *root = std::getenv("OBS_ROOT_PATH");
++    if (!root || !*root) {
++        QMessageBox::warning(parent, QStringLiteral("OBS indisponível"),
++                             QStringLiteral("O diretório privado do OBS ainda não foi inicializado."));
++        return false;
++    }
++    // Never overwrite a bundled plugin: this would change the trusted encoder/capture path.
++    const char *bundle = std::getenv("OBS_ANDROID_BUNDLED_PLUGIN_DIR");
++    if (bundle && *bundle && QFileInfo(QString::fromUtf8(bundle) + '/' + name).exists()) {
++        QMessageBox::warning(parent, QStringLiteral("Plugin protegido"),
++                             QStringLiteral("Este nome já pertence a um plugin integrado ao OBS."));
++        return false;
++    }
++    const QString pluginDir = QString::fromUtf8(root) + QStringLiteral("/lib");
++    const QString targetPath = pluginDir + '/' + name;
++    if (QFileInfo::exists(targetPath) || QFileInfo(targetPath).isSymLink()) {
++        QMessageBox::warning(parent, QStringLiteral("Plugin já existe"),
++                             QStringLiteral("Não vou substituir um plugin que já está instalado."));
++        return false;
++    }
++    if (QMessageBox::question(
++            parent, QStringLiteral("Instalar plugin externo?"),
++            QStringLiteral("Plugins .so executam código nativo com acesso aos dados do OBS. "
++                           "Use apenas arquivos confiáveis, compilados para este OBS Android ARM64. "
++                           "O plugin pode não carregar ou pode causar travamentos. Continuar?"),
++            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
++        return false;
++    if (!QDir().mkpath(pluginDir)) {
++        QMessageBox::warning(parent, QStringLiteral("Erro"), QStringLiteral("Não foi possível criar o diretório de plugins."));
++        return false;
++    }
++    QSaveFile destination(targetPath);
++    if (!destination.open(QIODevice::WriteOnly) ||
++        destination.write(bytes) != bytes.size() || !destination.commit()) {
++        destination.cancelWriting();
++        QMessageBox::warning(parent, QStringLiteral("Erro ao copiar"),
++                             QStringLiteral("Não foi possível salvar o plugin na pasta privada do OBS."));
++        return false;
++    }
++    QMessageBox::information(parent, QStringLiteral("Plugin importado"),
++                             QStringLiteral("O arquivo foi copiado. Reinicie o OBS para tentar carregá-lo. "
++                                            "A compatibilidade só poderá ser confirmada após reiniciar."));
++    return true;
++}
++#endif
++
+ } // namespace
+ 
+ namespace OBS {
+@@ -91,6 +179,52 @@ PluginManagerWindow::PluginManagerWindow(std::vector<ModuleInfo> const &modules,
+ 
+ 	setupInstalledPage(failedModules);
+ 
++#if defined(Q_OS_ANDROID)
++    // The APK's built-in plugins are immutable. Import is optional and never
++    // overwrites them; it is available through the installed-plugins page.
++    auto *androidImport = new QPushButton(QStringLiteral("Importar plugin ARM64 (.so)"), this);
++    androidImport->setObjectName(QStringLiteral("androidPluginImportButton"));
++    ui->installedPage->layout()->addWidget(androidImport);
++    connect(androidImport, &QPushButton::clicked, this, [this]() {
++        QPointer<PluginManagerWindow> dialog(this);
++        QFileDialog::getOpenFileContent(QStringLiteral("Plugin OBS (*.so)"),
++                                        [dialog](const QString &fileName, const QByteArray &contents) {
++            if (dialog && !fileName.isEmpty())
++                importAndroidPlugin(fileName, contents, dialog.data());
++        }, this);
++    });
++
++    auto *androidReport = new QPushButton(QStringLiteral("Copiar diagnóstico de fontes e plugins"), this);
++    androidReport->setObjectName(QStringLiteral("androidPluginReportButton"));
++    ui->installedPage->layout()->addWidget(androidReport);
++    connect(androidReport, &QPushButton::clicked, this, [this, failedModules]() {
++        QString report = QStringLiteral("OBS for Android - Diagnóstico de módulos\n");
++        report += QStringLiteral("Plugins listados: %1\n").arg(modules_.size());
++        for (const auto &module : modules_) {
++            report += QStringLiteral("- %1 (%2)\n")
++                          .arg(QString::fromStdString(module.module_name),
++                               module.enabledAtLaunch ? QStringLiteral("ativo") : QStringLiteral("desativado"));
++        }
++        for (const auto &name : failedModules)
++            report += QStringLiteral("ERRO: %1\n").arg(QString::fromStdString(name));
++        report += QStringLiteral("Tipos de fonte registrados:\n");
++        const char *sourceId = nullptr;
++        for (size_t index = 0; obs_enum_source_types(index, &sourceId); ++index) {
++            if (sourceId)
++                report += QStringLiteral("- %1\n").arg(QString::fromUtf8(sourceId));
++        }
++        if (QGuiApplication::clipboard()) {
++            QGuiApplication::clipboard()->setText(report);
++            QMessageBox::information(this, QStringLiteral("Diagnóstico de plugins"),
++                                     QStringLiteral("Lista de plugins e fontes copiada. "
++                                                    "Não inclui senhas ou chaves de transmissão."));
++        } else {
++            QMessageBox::warning(this, QStringLiteral("Diagnóstico"),
++                                 QStringLiteral("Não foi possível acessar a área de transferência."));
++        }
++    });
++#endif
++
+ 	setPage(Page::Installed);
+ 
+ 	ui->manageRestartLabel->setVisible(isEnabledPluginsChanged());
+diff --git a/obs-studio/plugins/android-audio/aaudio-input.c b/obs-studio/plugins/android-audio/aaudio-input.c
+index 33c6c39..7584dc9 100755
+--- a/obs-studio/plugins/android-audio/aaudio-input.c
++++ b/obs-studio/plugins/android-audio/aaudio-input.c
+@@ -114,7 +114,7 @@ struct aaudio_source {
+ 	/* 本次真正要用的设备（总线确认过的那台），-1 = 不知道 */
+ 	int32_t resolved_type;
+ 
+-	/* open 之后从 AAudio 读回来的实际参数 —— 共享模式下系统可能改这三个值 */
++	/* open 之后从 AAudio 读回来的实际参数 —— Modo compartilhado下系统可能改这三个值 */
+ 	int32_t rate;
+ 	int32_t nch;
+ 	size_t bpf;
+@@ -695,7 +695,7 @@ static bool aaudio_capture_start(struct aaudio_source *data)
+ static const char *aaudio_getname(void *unused)
+ {
+ 	UNUSED_PARAMETER(unused);
+-	return "AAudio 音频输入（Android 麦克风）";
++	return "Microfone (Android AAudio)";
+ }
+ 
+ static void *aaudio_create(obs_data_t *settings, obs_source_t *source)
+@@ -776,7 +776,7 @@ static obs_properties_t *aaudio_properties(void *unused)
+ 	 * 与 A3 的 USB 摄像头属性页同构。
+ 	 * 手填的口子并没关死：场景 JSON 里写个清单外的 id，aaudio_resolve_device 会
+ 	 * 如实说"不在清单里"并回落到系统默认。 */
+-	obs_property_t *dev_list = obs_properties_add_list(props, "device_id", "音频输入设备", OBS_COMBO_TYPE_LIST,
++	obs_property_t *dev_list = obs_properties_add_list(props, "device_id", "Dispositivo de entrada de áudio", OBS_COMBO_TYPE_LIST,
+ 							   OBS_COMBO_FORMAT_STRING);
+ 
+ 	struct obs_android_audio_device devs[AUDIO_DEV_MAX];
+@@ -792,7 +792,7 @@ static obs_properties_t *aaudio_properties(void *unused)
+ 					     "系统默认输入（总线已接通，但宿主送来的快照一条也没解析出来：协议不匹配）", "0");
+ 	} else {
+ 		obs_property_list_add_string(dev_list,
+-					     (n == 0) ? "系统默认输入（当前没有音频输入设备；未授予 RECORD_AUDIO 时清单可能为空）"
++					     (n == 0) ? "系统默认输入（当前没有Dispositivo de entrada de áudio；未授予 RECORD_AUDIO 时清单可能为空）"
+ 						      : "系统默认输入（由 AAudio 自己选）",
+ 					     "0");
+ 
+@@ -814,34 +814,34 @@ static obs_properties_t *aaudio_properties(void *unused)
+ 			blog(LOG_WARNING, "aaudio: 刷新属性页时 RECORD_AUDIO 未授予 —— 设备名可能读不到，清单也可能不完整");
+ 	}
+ 
+-	obs_properties_add_int(props, "sample_rate", "请求采样率（Hz，0 = 交给系统）", 0, 192000, 100);
+-	obs_properties_add_int(props, "channels", "请求声道数（1 或 2）", 1, 2, 1);
++	obs_properties_add_int(props, "sample_rate", "Taxa de amostragem (Hz, 0 = automática)", 0, 192000, 100);
++	obs_properties_add_int(props, "channels", "Canais (1 ou 2)", 1, 2, 1);
+ 
+-	obs_property_t *p = obs_properties_add_list(props, "input_preset", "输入预设", OBS_COMBO_TYPE_LIST,
++	obs_property_t *p = obs_properties_add_list(props, "input_preset", "Perfil de entrada", OBS_COMBO_TYPE_LIST,
+ 						    OBS_COMBO_FORMAT_STRING);
+-	obs_property_list_add_string(p, "generic（通用）", "generic");
+-	obs_property_list_add_string(p, "camcorder（摄像机，带自动增益/降噪）", "camcorder");
+-	obs_property_list_add_string(p, "voice_recognition（语音识别，尽量原样）", "voice_recognition");
+-	obs_property_list_add_string(p, "voice_communication（通话，走回声消除）", "voice_communication");
+-	obs_property_list_add_string(p, "unprocessed（不做任何处理）", "unprocessed");
++	obs_property_list_add_string(p, "Genérico", "generic");
++	obs_property_list_add_string(p, "Câmera (ganho e redução de ruído)", "camcorder");
++	obs_property_list_add_string(p, "Reconhecimento de voz", "voice_recognition");
++	obs_property_list_add_string(p, "Comunicação de voz (cancelamento de eco)", "voice_communication");
++	obs_property_list_add_string(p, "Áudio sem processamento", "unprocessed");
+ 
+ 	/* 这三条是 A4 要"试出低延迟能报什么"的开关。选项文本里写的都是 AAudio.h 的原话，
+ 	 * 实得值以开流后回读的那条"输入流已打开"日志为准。 */
+-	p = obs_properties_add_list(props, "sharing_mode", "共享模式", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+-	obs_property_list_add_string(p, "shared（共享，由 AudioFlinger 混音，采样率/格式可能被系统改）", "shared");
+-	obs_property_list_add_string(p, "exclusive（独占，延迟最低；同一设备只许一个客户端）", "exclusive");
++	p = obs_properties_add_list(props, "sharing_mode", "Modo compartilhado", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
++	obs_property_list_add_string(p, "Compartilhado (mixer do Android)", "shared");
++	obs_property_list_add_string(p, "Exclusivo (menor latência, se disponível)", "exclusive");
+ 
+-	p = obs_properties_add_list(props, "performance_mode", "性能模式", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+-	obs_property_list_add_string(p, "none（不作特别要求）", "none");
+-	obs_property_list_add_string(p, "low_latency（优先低延迟，能否真拿到看回读）", "low_latency");
+-	obs_property_list_add_string(p, "power_saving（省电；头文件写明输入流不支持，会按 none 处理）", "power_saving");
++	p = obs_properties_add_list(props, "performance_mode", "Modo de desempenho", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
++	obs_property_list_add_string(p, "Padrão", "none");
++	obs_property_list_add_string(p, "Baixa latência", "low_latency");
++	obs_property_list_add_string(p, "Economia de energia (não suportada na entrada)", "power_saving");
+ 
+-	p = obs_properties_add_list(props, "mmap_policy", "MMAP 路径（该接口 API 36 起才有，本插件按 dlsym 结果决定能否设置）",
++	p = obs_properties_add_list(props, "mmap_policy", "Política MMAP (somente se Android suportar)",
+ 				    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+-	obs_property_list_add_string(p, "unspecified（不碰这个开关，按系统默认）", "unspecified");
+-	obs_property_list_add_string(p, "never（强制走传统路径）", "never");
+-	obs_property_list_add_string(p, "auto（能用 MMAP 就用，否则回落）", "auto");
+-	obs_property_list_add_string(p, "always（必须 MMAP，否则开流失败）", "always");
++	obs_property_list_add_string(p, "Automática do sistema", "unspecified");
++	obs_property_list_add_string(p, "Nunca usar MMAP", "never");
++	obs_property_list_add_string(p, "Usar MMAP quando disponível", "auto");
++	obs_property_list_add_string(p, "Exigir MMAP (pode falhar)", "always");
+ 
+ 	return props;
+ }
+diff --git a/obs-studio/plugins/android-browser/data/locale/pt-BR.ini b/obs-studio/plugins/android-browser/data/locale/pt-BR.ini
+new file mode 100644
+index 0000000..be70421
+--- /dev/null
++++ b/obs-studio/plugins/android-browser/data/locale/pt-BR.ini
+@@ -0,0 +1,17 @@
++BrowserSource="Navegador Android"
++URL="Endereço (URL)"
++Width="Largura"
++Height="Altura"
++FPS="Taxa máxima de quadros"
++Transparent="Fundo transparente"
++Transparent.Description="Permite mostrar a cena atrás das áreas transparentes da página. Páginas com fundo opaco continuam opacas. Esta opção usa um caminho de textura acelerado por GPU."
++AlphaMode="Tratamento de transparência"
++AlphaMode.Compat="Compatível (padrão)"
++AlphaMode.Straight="Preservar alfa direto"
++AlphaMode.Premultiplied="Preservar alfa pré-multiplicado"
++AlphaMode.Description="Controla a composição de bordas e cores. Não cria transparência se o próprio Android entregar um quadro opaco."
++CSS="CSS personalizado"
++Refresh="Atualizar"
++StatusStarting="Iniciando navegador. Reabra as propriedades para atualizar o status."
++StatusReceiving="Recebendo quadros do navegador. Reabra as propriedades para atualizar o status."
++StatusRetrying="Falha ao iniciar o navegador ou perda da superfície gráfica. Tentando novamente. Consulte os registros do OBS e do Android."
+diff --git a/obs-studio/plugins/android-camera/camera2-input.c b/obs-studio/plugins/android-camera/camera2-input.c
+index be7739a..455e520 100755
+--- a/obs-studio/plugins/android-camera/camera2-input.c
++++ b/obs-studio/plugins/android-camera/camera2-input.c
+@@ -1403,7 +1403,7 @@ static void camera2_video_tick(void *data, float seconds)
+ static const char *camera2_getname(void *unused)
+ {
+ 	UNUSED_PARAMETER(unused);
+-	return "内置摄像头（Camera2）";
++	return "Câmera interna (Camera2)";
+ }
+ 
+ static void camera2_get_defaults(obs_data_t *settings)
+@@ -1628,7 +1628,7 @@ static obs_properties_t *camera2_properties(void *data)
+ 	const bool own_manager = c ? false : true;
+ 	const int n = manager ? enum_cameras(manager, cams, MAX_CAMERAS) : -1;
+ 
+-	obs_property_t *list = obs_properties_add_list(props, "camera_id", "相机", OBS_COMBO_TYPE_LIST,
++	obs_property_t *list = obs_properties_add_list(props, "camera_id", "Câmera", OBS_COMBO_TYPE_LIST,
+ 						       OBS_COMBO_FORMAT_STRING);
+ 	if (n < 0) {
+ 		obs_property_list_add_string(list, "（拿不到相机清单）", "");
+@@ -1644,7 +1644,7 @@ static obs_properties_t *camera2_properties(void *data)
+ 		obs_property_list_add_string(list, "（自动：按下面的朝向偏好挑第一台）", "");
+ 	}
+ 
+-	obs_property_t *facing = obs_properties_add_list(props, "facing", "朝向偏好", OBS_COMBO_TYPE_LIST,
++	obs_property_t *facing = obs_properties_add_list(props, "facing", "Câmera preferida", OBS_COMBO_TYPE_LIST,
+ 							 OBS_COMBO_FORMAT_INT);
+ 	obs_property_list_add_int(facing, "不挑", -1);
+ 	obs_property_list_add_int(facing, "后置", ACAMERA_LENS_FACING_BACK);
+@@ -1654,7 +1654,7 @@ static obs_properties_t *camera2_properties(void *data)
+ 	 * 还要叠加当前显示旋转与前置镜像，而本插件没有一条腿去读 Display.getRotation ——
+ 	 * 自动算在本机未必对（猜错就是把正的转歪）。所以给一个显式旋钮，默认"不旋转" =
+ 	 * 与本插件历史行为一致。上面相机下拉里那个"转角 %d°"就是设备报的传感器角度，供参考。 */
+-	obs_property_t *rot = obs_properties_add_list(props, "rotation", "画面旋转", OBS_COMBO_TYPE_LIST,
++	obs_property_t *rot = obs_properties_add_list(props, "rotation", "Rotação da imagem", OBS_COMBO_TYPE_LIST,
+ 						      OBS_COMBO_FORMAT_INT);
+ 	obs_property_list_add_int(rot, "不旋转（默认）", 0);
+ 	obs_property_list_add_int(rot, "顺时针 90°", 90);
+@@ -1676,7 +1676,7 @@ static obs_properties_t *camera2_properties(void *data)
+ 	char auto_size[96];
+ 	snprintf(auto_size, sizeof(auto_size), "（自动：%d×%d 以内挑最大的一档）", CAP_MAX_WIDTH, CAP_MAX_HEIGHT);
+ 
+-	obs_property_t *sizes = obs_properties_add_list(props, "cap_size", "分辨率", OBS_COMBO_TYPE_LIST,
++	obs_property_t *sizes = obs_properties_add_list(props, "cap_size", "Resolução", OBS_COMBO_TYPE_LIST,
+ 						     OBS_COMBO_FORMAT_STRING);
+ 	if (have_caps && caps.num_sizes > 0) {
+ 		obs_property_list_add_string(sizes, auto_size, "");
+@@ -1692,7 +1692,7 @@ static obs_properties_t *camera2_properties(void *data)
+ 		obs_property_list_add_string(sizes, "（自动：这台读不到尺寸表，只能自动）", "");
+ 	}
+ 
+-	obs_property_t *fpsl = obs_properties_add_list(props, "fps", "帧率", OBS_COMBO_TYPE_LIST,
++	obs_property_t *fpsl = obs_properties_add_list(props, "fps", "FPS", OBS_COMBO_TYPE_LIST,
+ 						     OBS_COMBO_FORMAT_STRING);
+ 	if (have_caps && caps.num_fps > 0) {
+ 		obs_property_list_add_string(fpsl, "（自动：表里帧率上限最高的一档）", "");
+@@ -1713,7 +1713,7 @@ static obs_properties_t *camera2_properties(void *data)
+ 	/* 色彩矩阵留成可改的，是因为"Android 相机给的 8bit YUV 到底算不算 limited range"这件事
+ 	 * 只有真机能定（见 push_frame 那段注释与 plan.md 里 uvc-input 那条同源待办）。
+ 	 * 默认值写死成 DEFAULT，撞色偏时不用重打包。 */
+-	obs_property_t *cs = obs_properties_add_list(props, "colorspace", "色彩矩阵", OBS_COMBO_TYPE_LIST,
++	obs_property_t *cs = obs_properties_add_list(props, "colorspace", "Matriz de cores", OBS_COMBO_TYPE_LIST,
+ 						     OBS_COMBO_FORMAT_INT);
+ 	obs_property_list_add_int(cs, "自动（按 Rec. 709）", VIDEO_CS_DEFAULT);
+ 	obs_property_list_add_int(cs, "Rec. 601", VIDEO_CS_601);
+diff --git a/obs-studio/plugins/android-capture/uvc-input.c b/obs-studio/plugins/android-capture/uvc-input.c
+index 47cdd81..d018562 100755
+--- a/obs-studio/plugins/android-capture/uvc-input.c
++++ b/obs-studio/plugins/android-capture/uvc-input.c
+@@ -1296,7 +1296,7 @@ static bool uvc_run_once(struct uvc_source *s, bool *perm_requested)
+ 
+ 	/* ---- 1. 总线清单里找选中的设备 / 授权 ---- */
+ 	if (!s->usb_device[0]) {
+-		set_status(s, "未选择设备（在属性页里选一台 USB 摄像头）");
++		set_status(s, "未选择设备（在属性页里选一台 Câmera ou placa de captura USB）");
+ 		return false;
+ 	}
+ 	const int ndev = obs_android_usb_enum_devices(devs, 8);
+@@ -2213,7 +2213,7 @@ static void uvc_stop_thread(struct uvc_source *s)
+ static const char *uvc_getname(void *unused)
+ {
+ 	UNUSED_PARAMETER(unused);
+-	return "UVC 摄像头（Android USB）";
++	return "Dispositivo de captura USB (UVC)";
+ }
+ 
+ static void uvc_get_defaults(obs_data_t *settings)
+@@ -2325,7 +2325,7 @@ static void uvc_update(void *data, obs_data_t *settings)
+ 		uvc_start_thread(s);
+ }
+ 
+-/* 属性页【申请 USB 授权】：权限结果是异步的，返回 false 不刷属性页（同 nikon-source） */
++/* 属性页【Solicitar permissão USB】：权限结果是异步的，返回 false 不刷属性页（同 nikon-source） */
+ static bool on_request_permission(obs_properties_t *props, obs_property_t *property, void *data)
+ {
+ 	UNUSED_PARAMETER(props);
+@@ -2350,7 +2350,7 @@ static obs_properties_t *uvc_properties(void *data)
+ 	obs_properties_t *props = obs_properties_create();
+ 
+ 	/* 设备清单是打开属性页那一刻的快照（插拔后要重开对话框） */
+-	obs_property_t *dev_list = obs_properties_add_list(props, "usb_device", "USB 摄像头", OBS_COMBO_TYPE_LIST,
++	obs_property_t *dev_list = obs_properties_add_list(props, "usb_device", "Câmera ou placa de captura USB", OBS_COMBO_TYPE_LIST,
+ 							   OBS_COMBO_FORMAT_STRING);
+ 
+ 	struct obs_android_usb_device devs[8];
+@@ -2360,7 +2360,7 @@ static obs_properties_t *uvc_properties(void *data)
+ 					     "");
+ 		blog(LOG_WARNING, "uvc: 属性页打不开设备清单 —— USB 总线未注册");
+ 	} else if (n == 0) {
+-		obs_property_list_add_string(dev_list, "（当前没有 USB 摄像头，插上后重新打开本属性页）", "");
++		obs_property_list_add_string(dev_list, "（当前没有 Câmera ou placa de captura USB，插上后重新打开本属性页）", "");
+ 	} else {
+ 		for (int i = 0; i < n; i++) {
+ 			char text[OBS_ANDROID_USB_LABEL_LEN + OBS_ANDROID_USB_NAME_LEN + 16];
+@@ -2368,29 +2368,29 @@ static obs_properties_t *uvc_properties(void *data)
+ 				 devs[i].has_permission ? "" : "（未授权）");
+ 			obs_property_list_add_string(dev_list, text, devs[i].name);
+ 		}
+-		obs_property_list_add_string(dev_list, "（不使用 USB 摄像头）", "");
++		obs_property_list_add_string(dev_list, "（不使用 Câmera ou placa de captura USB）", "");
+ 		blog(LOG_INFO, "uvc: 属性页列出 %d 个 USB 设备", n);
+ 	}
+ 
+-	obs_properties_add_button2(props, "request_perm", "申请 USB 授权", on_request_permission, s);
++	obs_properties_add_button2(props, "request_perm", "Solicitar permissão USB", on_request_permission, s);
+ 
+-	obs_properties_add_int(props, "width", "采集宽度", 16, 7680, 2);
+-	obs_properties_add_int(props, "height", "采集高度", 16, 4320, 2);
+-	obs_properties_add_int(props, "fps", "采集帧率", 1, 240, 1);
++	obs_properties_add_int(props, "width", "Largura da captura", 16, 7680, 2);
++	obs_properties_add_int(props, "height", "Altura da captura", 16, 4320, 2);
++	obs_properties_add_int(props, "fps", "FPS da captura", 1, 240, 1);
+ 
+-	obs_property_t *p = obs_properties_add_list(props, "video_format", "设备出流格式", OBS_COMBO_TYPE_LIST,
++	obs_property_t *p = obs_properties_add_list(props, "video_format", "Formato do vídeo", OBS_COMBO_TYPE_LIST,
+ 						    OBS_COMBO_FORMAT_STRING);
+-	obs_property_list_add_string(p, "MJPEG（采集卡内编，1080p 首选）", "mjpeg");
+-	obs_property_list_add_string(p, "YUYV（未压缩，画质稳但吃 USB 带宽）", "yuyv");
+-	obs_property_list_add_string(p, "NV12（未压缩半平面）", "nv12");
+-	obs_property_list_add_string(p, "（自动：优先 MJPEG 1080p）", "");
++	obs_property_list_add_string(p, "MJPEG (preferível para captura 1080p)", "mjpeg");
++	obs_property_list_add_string(p, "YUYV (sem compressão, maior uso de USB)", "yuyv");
++	obs_property_list_add_string(p, "NV12 (sem compressão)", "nv12");
++	obs_property_list_add_string(p, "Automático (priorizar MJPEG 1080p)", "");
+ 
+-	obs_property_t *latency = obs_properties_add_bool(props, "yuv_low_latency", "YUV 直通采集（保持所选格式和帧率）");
++	obs_property_t *latency = obs_properties_add_bool(props, "yuv_low_latency", "Captura YUV direta (respeitar formato e FPS)");
+ 	obs_property_set_long_description(
+ 		latency,
+ 		"仅对 YUYV/NV12 生效：保持所选格式、尺寸和帧率，不自动切 MJPEG/降分辨率。关闭可恢复兼容协商。");
+ 
+-	obs_property_t *unbuffered = obs_properties_add_bool(props, "yuv_unbuffered", "最低延迟（优先最新帧）");
++	obs_property_t *unbuffered = obs_properties_add_bool(props, "yuv_unbuffered", "Menor latência (priorizar o quadro mais recente)");
+ 	obs_property_set_long_description(unbuffered,
+ 		"仅对 YUV 直通采集生效。默认关闭以平滑采集与输出的时钟抖动；开启后丢弃排队的中间帧，可能增加重复帧和卡顿。");
+ 
+diff --git a/obs-studio/plugins/android-mediacodec/data/locale/pt-BR.ini b/obs-studio/plugins/android-mediacodec/data/locale/pt-BR.ini
+new file mode 100644
+index 0000000..06dd6e3
+--- /dev/null
++++ b/obs-studio/plugins/android-mediacodec/data/locale/pt-BR.ini
+@@ -0,0 +1,4 @@
++Encoder="Android MediaCodec H.264 (hardware)"
++EncoderHEVC="Android MediaCodec H.265/HEVC (hardware)"
++Bitrate="Taxa de bits (kbps)"
++KeyframeInterval="Intervalo de quadro-chave (segundos)"
+diff --git a/obs-studio/plugins/android-screen/screen-capture.c b/obs-studio/plugins/android-screen/screen-capture.c
+index 55a3dbc..28d2a5e 100755
+--- a/obs-studio/plugins/android-screen/screen-capture.c
++++ b/obs-studio/plugins/android-screen/screen-capture.c
+@@ -844,7 +844,7 @@ static void check_live(struct screen_source *c)
+ static const char *screen_getname(void *unused)
+ {
+ 	UNUSED_PARAMETER(unused);
+-	return "屏幕采集（MediaProjection）";
++	return "Captura de tela (MediaProjection)";
+ }
+ 
+ static void *screen_create(obs_data_t *settings, obs_source_t *source)
+@@ -1109,14 +1109,14 @@ static obs_properties_t *screen_properties(void *data)
+ 	struct screen_source *c = data;
+ 	char state[1536];
+ 	char audio[192];
+-	obs_property_t *resolution = obs_properties_add_list(props, "native_resolution", "采集分辨率",
++	obs_property_t *resolution = obs_properties_add_list(props, "native_resolution", "Resolução da captura",
+ 							    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_BOOL);
+-	obs_property_list_add_bool(resolution, "1080p 上限（保持比例，减少内存带宽）", false);
+-	obs_property_list_add_bool(resolution, "屏幕原生分辨率", true);
+-	obs_property_t *alpha = obs_properties_add_list(props, "alpha_mode", "透明度处理", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+-	obs_property_list_add_int(alpha, "兼容（默认）", SCREEN_ALPHA_COMPAT);
+-	obs_property_list_add_int(alpha, "保留 Alpha（直通）", SCREEN_ALPHA_STRAIGHT);
+-	obs_property_list_add_int(alpha, "保留 Alpha（预乘输入）", SCREEN_ALPHA_PREMULTIPLIED);
++	obs_property_list_add_bool(resolution, "Limitar a 1080p (menor uso de memória)", false);
++	obs_property_list_add_bool(resolution, "Resolução nativa da tela", true);
++	obs_property_t *alpha = obs_properties_add_list(props, "alpha_mode", "Tratamento de transparência", OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
++	obs_property_list_add_int(alpha, "Compatível (padrão)", SCREEN_ALPHA_COMPAT);
++	obs_property_list_add_int(alpha, "Preservar alfa (direto)", SCREEN_ALPHA_STRAIGHT);
++	obs_property_list_add_int(alpha, "Preservar alfa (pré-multiplicado)", SCREEN_ALPHA_PREMULTIPLIED);
+ 	obs_property_set_long_description(alpha, "保留系统交付的 Alpha；无法恢复已合成的背景。预乘模式用于颜色已乘 Alpha 的输入。");
+ 	obs_properties_add_text(props, "alpha_info", "保留采集帧中的透明度；若背景已被系统合成，将保持不透明。", OBS_TEXT_INFO);
+ 
+@@ -1148,8 +1148,8 @@ static obs_properties_t *screen_properties(void *data)
+ 	else
+ 		snprintf(state, sizeof(state), "总线未接线：拿不到投影令牌，源也没建起来");
+ 
+-	obs_properties_add_bool(props, "gpu_capture", "GPU 屏幕采集（实验，兼容时启用）");
+-	obs_properties_add_text(props, "gpu_info", "默认使用 GPU；失败时退避重试，不自动回退 CPU。取消勾选可手动选择 CPU。", OBS_TEXT_INFO);
++	obs_properties_add_bool(props, "gpu_capture", "Captura de tela pela GPU (experimental)");
++	obs_properties_add_text(props, "gpu_info", "A GPU é o padrão. Se falhar, a captura tenta novamente; desative a opção para usar a CPU.", OBS_TEXT_INFO);
+ 	obs_properties_add_text(props, "cap_state", state, OBS_TEXT_INFO);
+ 
+ 	/* 内录单独占一行而不是并到上面那句里：它是一路一份的（几颗源共享），把它的账记到
+diff --git a/scripts/test-android-plugin-import.cpp b/scripts/test-android-plugin-import.cpp
+new file mode 100644
+index 0000000..825acd3
+--- /dev/null
++++ b/scripts/test-android-plugin-import.cpp
+@@ -0,0 +1,33 @@
++/*
++ * Portable unit tests for the Android plugin importer ELF validation.
++ * Run: clang++ -std=c++17 -Wall -Wextra -Werror -Iobs-studio/frontend/plugin-manager
++ *      scripts/test-android-plugin-import.cpp -o /tmp/test-android-plugin-import
++ */
++#include "../obs-studio/frontend/plugin-manager/AndroidPluginImportValidation.hpp"
++#include <array>
++#include <cassert>
++#include <cstdint>
++#include <iostream>
++
++int main()
++{
++    using namespace OBS::AndroidPluginImport;
++    std::array<unsigned char, 64> so{};
++    so[0]=0x7f; so[1]='E'; so[2]='L'; so[3]='F';
++    so[4]=2; so[5]=1; so[16]=3; so[17]=0; so[18]=183; so[19]=0;
++    assert(isArm64SharedLibrary(so.data(),so.size()));
++    assert(!isArm64SharedLibrary(nullptr, so.size()));
++    assert(!isArm64SharedLibrary(so.data(),19));
++    assert(!isArm64SharedLibrary(so.data(),maxPluginBytes+1));
++    auto invalid=so;
++    invalid[4]=1; // 32-bit ELF
++    assert(!isArm64SharedLibrary(invalid.data(), invalid.size()));
++    invalid=so; invalid[18]=62; // x86_64 ELF
++    assert(!isArm64SharedLibrary(invalid.data(), invalid.size()));
++    invalid=so; invalid[16]=2; // ET_EXEC
++    assert(!isArm64SharedLibrary(invalid.data(), invalid.size()));
++    invalid=so; invalid[0]=0; // not an ELF file
++    assert(!isArm64SharedLibrary(invalid.data(), invalid.size()));
++    std::cout<<"PASS Android OBS plugin ELF validation\n";
++    return 0;
++}
+-- 
+2.56.1
