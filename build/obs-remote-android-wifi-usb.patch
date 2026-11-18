@@ -1,0 +1,180 @@
+diff --git a/CAPTURA_CELULAR_REDE_USB.md b/CAPTURA_CELULAR_REDE_USB.md
+new file mode 100644
+index 0000000..187dbf0
+--- /dev/null
++++ b/CAPTURA_CELULAR_REDE_USB.md
+@@ -0,0 +1,23 @@
++# Captura de outro Android no OBS POCO (sem ADB)
++
++## Recepção no POCO X7 Pro
++
++No OBS, toque em **Adicionar fonte → Celular remoto (Wi-Fi / USB)**. O novo tipo usa o demuxer e decoder nativo do módulo OBS FFmpeg, incluindo MediaCodec quando suportado. Possui reconexão e buffer ajustáveis.
++
++**Wi-Fi**: conecte os aparelhos à mesma rede local, desative isolamento de clientes no roteador e inicie no aparelho de origem um aplicativo que obtenha autorização do Android MediaProjection e envie um fluxo de vídeo H.264, opcionalmente com áudio AAC.
++
++**USB sem depuração/ADB**: se os dois aparelhos suportarem, ligue por cabo de dados e ative o **compartilhamento de internet via USB no aparelho de origem**. No receptor, confirme que surgiu uma interface de rede e que os IPs se alcançam. A transmissão será exatamente o mesmo fluxo IP usado no Wi-Fi, só que pelo USB. Não presuma que todo telefone ou hub ofereça suporte RNDIS/USB Ethernet em Android.
++
++**USB HDMI/UVC**: se o aparelho de origem tiver saída de vídeo compatível com HDMI, use um adaptador de vídeo apropriado e uma placa de captura UVC no POCO. No OBS, escolha **Dispositivo de captura USB (UVC)**, não a fonte de rede. Um cabo USB-C comum sem saída de vídeo não oferece esse modo.
++
++## URL do novo tipo de fonte
++
++A fonte inclui `udp://@:12345?fifo_size=5000000&overrun_nonfatal=1` como endereço inicial para receber **MPEG-TS sobre UDP**. Configure o aplicativo transmissor para enviar H.264/AAC em MPEG-TS ao IP do receptor, porta UDP **12345**. Também é possível informar um servidor `rtsp://` já em funcionamento. A opção SRT só funciona se o FFmpeg compilado no APK tiver suporte a SRT, o que ainda deve ser verificado.
++
++## Limitações importantes
++
++- O aparelho de origem precisa autorizar a captura de tela no Android, normalmente por meio de um aplicativo transmissor; o receptor não pode iniciar sozinho uma captura de outro Android.
++- Scrcpy convencional exige ADB para iniciar seu servidor. O modo Wi-Fi/USB-tether **não usa scrcpy**, mas reaproveita a ideia de vídeo H.264 de baixa latência.
++- Controle remoto por toque e áudio interno dependem do aplicativo de origem e do Android, não vêm automaticamente da fonte receptora.
++- Resolução 1080p60 e baixa latência são metas, não resultados confirmados até o teste ponta a ponta nos dois aparelhos.
++- Evite abrir portas de captura para a internet; use redes locais confiáveis. UDP simples não tem autenticação nem criptografia.
+diff --git a/obs-studio/plugins/obs-ffmpeg/obs-ffmpeg-source.c b/obs-studio/plugins/obs-ffmpeg/obs-ffmpeg-source.c
+index bfed017..86f2704 100755
+--- a/obs-studio/plugins/obs-ffmpeg/obs-ffmpeg-source.c
++++ b/obs-studio/plugins/obs-ffmpeg/obs-ffmpeg-source.c
+@@ -813,3 +813,94 @@ struct obs_source_info ffmpeg_source = {
+ 	.media_set_time = ffmpeg_source_set_time,
+ 	.media_get_state = ffmpeg_source_get_state,
+ };
++
++
++#ifdef __ANDROID__
++/*
++ * One receiver for Android-to-Android screen casts over an IP transport:
++ * Wi-Fi and USB tethering both deliver IP packets. The sending device must
++ * grant MediaProjection permission to its screen-cast application.
++ * A UVC HDMI capture card is a separate physical USB video source.
++ *
++ * Keep all decoding, clock synchronization and reconnect behavior delegated
++ * to the existing FFmpeg media source; this avoids duplicate decode engines.
++ */
++static const char *android_remote_getname(void *unused)
++{
++    UNUSED_PARAMETER(unused);
++    return "Celular remoto (Wi-Fi / USB)";
++}
++
++static void android_remote_defaults(obs_data_t *settings)
++{
++    ffmpeg_source_defaults(settings);
++    obs_data_set_default_bool(settings, "is_local_file", false);
++    obs_data_set_default_bool(settings, "hw_decode", true);
++    obs_data_set_default_bool(settings, "clear_on_media_end", true);
++    obs_data_set_default_int(settings, "buffering_mb", 2);
++    obs_data_set_default_int(settings, "reconnect_delay_sec", 2);
++    obs_data_set_default_string(settings, "input", "udp://@:12345?fifo_size=5000000&overrun_nonfatal=1");
++}
++
++static obs_properties_t *android_remote_properties(void *data)
++{
++    UNUSED_PARAMETER(data);
++    obs_properties_t *props = obs_properties_create();
++    obs_properties_set_flags(props, OBS_PROPERTIES_DEFER_UPDATE);
++
++    obs_properties_add_text(
++        props, "remote_help",
++        "Conecte por Wi-Fi ou rede USB",
++        OBS_TEXT_INFO);
++    obs_properties_add_text(
++        props, "remote_setup",
++        "No aparelho de origem, inicie uma transmissão da tela autorizada "
++        "(MediaProjection). Se usar cabo USB, ative rede USB/tethering; "
++        "o cabo sozinho não envia vídeo. Para capturadora HDMI, use a fonte UVC.",
++        OBS_TEXT_INFO);
++    obs_properties_add_text(
++        props, "input", "Endereço do vídeo (UDP / RTSP / SRT*)",
++        OBS_TEXT_DEFAULT);
++    obs_properties_add_text(
++        props, "remote_url_info",
++        "UDP recebido neste aparelho: udp://@:12345?fifo_size=5000000&overrun_nonfatal=1\n"
++        "RTSP: rtsp://IP_DO_APARELHO:8554/stream\n"
++        "SRT depende de suporte ao protocolo na biblioteca FFmpeg usada pelo APK.",
++        OBS_TEXT_INFO);
++    obs_properties_add_text(props, "input_format", "Formato forçado (opcional)", OBS_TEXT_DEFAULT);
++    obs_properties_add_bool(props, "hw_decode", "Decodificação por hardware (MediaCodec)");
++    obs_property_t *buffer = obs_properties_add_int_slider(
++        props, "buffering_mb", "Buffer de rede (MB)", 0, 16, 1);
++    obs_property_int_set_suffix(buffer, " MB");
++    obs_property_t *retry = obs_properties_add_int_slider(
++        props, "reconnect_delay_sec", "Reconectar após (segundos)", 1, 30, 1);
++    obs_property_int_set_suffix(retry, " s");
++    obs_properties_add_bool(props, "clear_on_media_end", "Limpar tela ao desconectar");
++    obs_properties_add_bool(props, "log_changes", "Registrar diagnóstico");
++    return props;
++}
++
++struct obs_source_info android_remote_source = {
++    .id = "android_remote_source",
++    .type = OBS_SOURCE_TYPE_INPUT,
++    .output_flags = OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO |
++                    OBS_SOURCE_DO_NOT_DUPLICATE | OBS_SOURCE_CONTROLLABLE_MEDIA,
++    .get_name = android_remote_getname,
++    .create = ffmpeg_source_create,
++    .destroy = ffmpeg_source_destroy,
++    .get_defaults = android_remote_defaults,
++    .get_properties = android_remote_properties,
++    .activate = ffmpeg_source_activate,
++    .deactivate = ffmpeg_source_deactivate,
++    .video_tick = ffmpeg_source_tick,
++    .update = ffmpeg_source_update,
++    .icon_type = OBS_ICON_TYPE_MEDIA,
++    .media_play_pause = ffmpeg_source_play_pause,
++    .media_restart = ffmpeg_source_restart,
++    .media_stop = ffmpeg_source_stop,
++    .media_get_duration = ffmpeg_source_get_duration,
++    .media_get_time = ffmpeg_source_get_time,
++    .media_set_time = ffmpeg_source_set_time,
++    .media_get_state = ffmpeg_source_get_state,
++};
++#endif
+diff --git a/obs-studio/plugins/obs-ffmpeg/obs-ffmpeg.c b/obs-studio/plugins/obs-ffmpeg/obs-ffmpeg.c
+index 7776632..9dacd0b 100755
+--- a/obs-studio/plugins/obs-ffmpeg/obs-ffmpeg.c
++++ b/obs-studio/plugins/obs-ffmpeg/obs-ffmpeg.c
+@@ -32,6 +32,9 @@ MODULE_EXPORT const char *obs_module_description(void)
+ }
+ 
+ extern struct obs_source_info ffmpeg_source;
++#ifdef __ANDROID__
++extern struct obs_source_info android_remote_source;
++#endif
+ extern struct obs_output_info ffmpeg_output;
+ extern struct obs_output_info ffmpeg_muxer;
+ extern struct obs_output_info ffmpeg_mpegts_muxer;
+@@ -362,6 +365,9 @@ bool obs_module_load(void)
+ 		blog(LOG_WARNING, "FFmpeg MediaCodec Java VM unavailable; MediaCodec video decoding disabled");
+ #endif
+ 	obs_register_source(&ffmpeg_source);
++#ifdef __ANDROID__
++	obs_register_source(&android_remote_source);
++#endif
+ 	obs_register_output(&ffmpeg_output);
+ 	obs_register_output(&ffmpeg_muxer);
+ 	obs_register_output(&ffmpeg_mpegts_muxer);
+diff --git a/scripts/test-android-remote-source.py b/scripts/test-android-remote-source.py
+new file mode 100644
+index 0000000..0438d03
+--- /dev/null
++++ b/scripts/test-android-remote-source.py
+@@ -0,0 +1,22 @@
++#!/usr/bin/env python3
++"""Checks that the native Android remote-receiver source stays wired to FFmpeg."""
++from pathlib import Path
++ROOT=Path(__file__).resolve().parents[1]
++ff=(ROOT/"obs-studio/plugins/obs-ffmpeg/obs-ffmpeg-source.c").read_text()
++mod=(ROOT/"obs-studio/plugins/obs-ffmpeg/obs-ffmpeg.c").read_text()
++must={
++    "unique source":'.id = "android_remote_source"',
++    "non-file media":'obs_data_set_default_bool(settings, "is_local_file", false)',
++    "hardware codec":'obs_data_set_default_bool(settings, "hw_decode", true)',
++    "low reconnection":'obs_data_set_default_int(settings, "reconnect_delay_sec", 2)',
++    "UDP listen port":'udp://@:12345',
++    "media source lifecycle":'.create = ffmpeg_source_create',
++    "media network retry":'.video_tick = ffmpeg_source_tick',
++    "render and audio":'OBS_SOURCE_ASYNC_VIDEO | OBS_SOURCE_AUDIO',
++    "no ADB dependency":'o cabo sozinho não envia vídeo',
++}
++for name, token in must.items():
++    assert token in ff, f"{name} missing"
++assert mod.count("obs_register_source(&android_remote_source)") == 1
++assert "extern struct obs_source_info android_remote_source;" in mod
++print("PASS: Android screen receiver uses FFmpeg, MediaCodec and USB/IP transport")
