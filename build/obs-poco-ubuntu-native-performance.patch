@@ -1,0 +1,248 @@
+diff --git a/PERFORMANCE_POCO_UBUNTU_PORT.md b/PERFORMANCE_POCO_UBUNTU_PORT.md
+new file mode 100644
+index 0000000..ed55a37
+--- /dev/null
++++ b/PERFORMANCE_POCO_UBUNTU_PORT.md
+@@ -0,0 +1,54 @@
++# OBS POCO PRO: migração das otimizações do Ubuntu
++
++Origem verificada no POCO X7 Pro:
++`/data/data/com.termux/files/usr/var/lib/proot-distro/containers/ubuntu/rootfs/root/.config/obs-poco-gpu-bench/obs-studio/basic/profiles/`
++
++## Configurações e medições recuperadas
++
++| Perfil original | Resolução | FPS | Bitrate | Codificador |
++| --- | --- | --- | --- | --- |
++| POCO_1080P60_ULTRAFAST_QA_20261115 | 1080×1920 | 60 | 10.000 kbps | x264 ultrafast |
++| POCO_VERTICAL_1080 | 1080×1920 | 30 | 6.000 kbps | x264 ultrafast |
++| POCO_LIVE_AV_720 | 720×1280 | 30 | 4.000 kbps | x264 ultrafast |
++| POCO_LIVE_AV_540 | 540×960 | 24 | 3.000 kbps | x264 ultrafast |
++| POCO_LIVE_AV_360 | 360×640 | 30 | 1.800 kbps | x264 ultrafast |
++
++Usavam majoritariamente NV12/BT.709, intervalo de quadros-chave de 2 segundos
++e perfil CBR. Os benchmarks de gravação antigos no Ubuntu registraram
++quedas de FPS, por isso os números acima são configurações e NÃO resultados
++de 60 FPS sustentados.
++
++## Portado ao APK nativo
++
++1. **Prévia desligada automaticamente enquanto há saída ativa**: na GUI,
++   menu **Ferramentas → POCO: ocultar prévia durante live e gravação**.
++   Ativado por padrão em Android; desativável sem reiniciar.
++   O estado acompanha transmissão e gravação simultâneas e restaura a prévia
++   quando ambas terminam. Não muda a resolução, os FPS, cenas ou o encoder.
++2. **Codificação por hardware**: a implementação Android já oferece MediaCodec
++   H.264 de superfície, modo CBR, quadro-chave a cada 2 segundos e
++   gerenciamento de pressão de buffers. Preservada em vez de copiar
++   x264 do Ubuntu, que sobrecarregava CPU.
++3. **Áudio nativo**: manter a origem AAudio do Android, sem PulseAudio TCP.
++4. **Captação Android e rede**: preservar MediaProjection e fonte
++   de celular remoto por UDP/RTMP/USB-tether, sem VirGL ou X11.
++5. **Proteção contra interfaces pesadas**: prévia inativa durante live;
++   cenas e fontes de navegador não são apagadas automaticamente.
++
++## O que NÃO foi migrado
++
++- VirGL/ANGLE/llvmpipe, Termux:X11, Openbox e Ubuntu PRoot.
++- x264 ultrafast/threads=3/8: inadequados ao MediaCodec nativo.
++- CEF de desktop e filtros .so Linux sem compilação ARM64 Android.
++- Perfis antigos que contenham links de live/stream keys e informações
++  privadas. Nenhuma credencial foi copiada.
++- Adaptar automaticamente a qualidade 1080p60 a qualquer rede: precisa de
++  telemetria real do OBS e testes ao vivo com o RedMagic 11.
++
++## Validação
++
++- Teste unitário `scripts/test-android-output-preview.cpp` cobre a
++  máquina de estados de prévia ao ligar/desligar live e gravação simultâneas,
++  modo Studio e desativação voluntária.
++- Compilar e instalar APK ARM64 ainda é necessário para testes de campo,
++  incluindo carga de GPU, MediaCodec, fonte remota e transmissão.
+diff --git a/obs-studio/frontend/OBSApp.cpp b/obs-studio/frontend/OBSApp.cpp
+index c74fc3a..e4fd048 100755
+--- a/obs-studio/frontend/OBSApp.cpp
++++ b/obs-studio/frontend/OBSApp.cpp
+@@ -416,6 +416,11 @@ void OBSApp::InitUserConfigDefaults()
+ 	config_set_default_string(userConfig, "General", "HotkeyFocusType", "NeverDisableHotkeys");
+ 
+ 	config_set_default_bool(userConfig, "BasicWindow", "PreviewEnabled", true);
++#ifdef __ANDROID__
++    // Native successor to the Ubuntu/Termux "disable preview during live" policy.
++    // Does not lower stream/record resolution or FPS, and is user-controllable.
++    config_set_default_bool(userConfig, "BasicWindow", "POCOAutoHidePreviewOnOutput", true);
++#endif
+ 	config_set_default_bool(userConfig, "BasicWindow", "PreviewProgramMode", false);
+ 	config_set_default_bool(userConfig, "BasicWindow", "SceneDuplicationMode", true);
+ 	config_set_default_bool(userConfig, "BasicWindow", "SwapScenesMode", true);
+diff --git a/obs-studio/frontend/utility/AndroidOutputPreviewPolicy.hpp b/obs-studio/frontend/utility/AndroidOutputPreviewPolicy.hpp
+new file mode 100644
+index 0000000..36e92de
+--- /dev/null
++++ b/obs-studio/frontend/utility/AndroidOutputPreviewPolicy.hpp
+@@ -0,0 +1,20 @@
++// Native Android OBS: auto-hide preview while streaming/recording.
++// SPDX-License-Identifier: GPL-2.0-or-later
++#pragma once
++
++enum class OBSAndroidPreviewAction { None, Hide, Restore };
++
++// A simple deterministic state machine. Streaming and recording can overlap;
++// closing one must not restore the preview while the other is still active.
++inline OBSAndroidPreviewAction OBSAndroidPreviewTransition(
++    bool streaming, bool recording, bool previewEnabled,
++    bool studioMode, bool autoHide, bool &suppressed)
++{
++    const bool shouldHide = (streaming || recording) && previewEnabled &&
++                            !studioMode && autoHide;
++    if (shouldHide == suppressed)
++        return OBSAndroidPreviewAction::None;
++    suppressed = shouldHide;
++    return shouldHide ? OBSAndroidPreviewAction::Hide
++                      : OBSAndroidPreviewAction::Restore;
++}
+diff --git a/obs-studio/frontend/widgets/OBSBasic.cpp b/obs-studio/frontend/widgets/OBSBasic.cpp
+index 6ff0881..9728fe4 100755
+--- a/obs-studio/frontend/widgets/OBSBasic.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic.cpp
+@@ -153,6 +153,37 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new
+ 
+ 	ui->setupUi(this);
+ 	ui->previewDisabledWidget->setVisible(false);
++#ifdef __ANDROID__
++    // Unlike the Ubuntu launcher, this uses Qt's native display path.
++    // Live and recording signals may overlap: retain the disabled preview
++    // until BOTH outputs have stopped.
++    QAction *pocoPreviewAction = ui->menuTools->addAction(
++        QStringLiteral("POCO: ocultar prévia durante live e gravação"));
++    pocoPreviewAction->setCheckable(true);
++    pocoPreviewAction->setChecked(config_get_bool(App()->GetUserConfig(),
++                                                  "BasicWindow", "POCOAutoHidePreviewOnOutput"));
++    connect(pocoPreviewAction, &QAction::toggled, this, [this](bool enabled) {
++        config_set_bool(App()->GetUserConfig(), "BasicWindow",
++                        "POCOAutoHidePreviewOnOutput", enabled);
++        UpdateAndroidOutputPreview();
++    });
++    connect(this, &OBSBasic::StreamingStarted, this, [this] {
++        androidStreamOutputStarted = true;
++        UpdateAndroidOutputPreview();
++    });
++    connect(this, &OBSBasic::StreamingStopped, this, [this] {
++        androidStreamOutputStarted = false;
++        UpdateAndroidOutputPreview();
++    });
++    connect(this, &OBSBasic::RecordingStarted, this, [this] {
++        androidRecordOutputStarted = true;
++        UpdateAndroidOutputPreview();
++    });
++    connect(this, &OBSBasic::RecordingStopped, this, [this] {
++        androidRecordOutputStarted = false;
++        UpdateAndroidOutputPreview();
++    });
++#endif
+ 
+ 	/* Set up streaming connections */
+ 	connect(
+diff --git a/obs-studio/frontend/widgets/OBSBasic.hpp b/obs-studio/frontend/widgets/OBSBasic.hpp
+index 6712920..4ee038a 100755
+--- a/obs-studio/frontend/widgets/OBSBasic.hpp
++++ b/obs-studio/frontend/widgets/OBSBasic.hpp
+@@ -841,6 +841,12 @@ private slots:
+ 	 */
+ private:
+ 	bool previewEnabled = true;
++#ifdef __ANDROID__
++    bool androidStreamOutputStarted = false;
++    bool androidRecordOutputStarted = false;
++    bool androidPreviewHiddenByPerformanceMode = false;
++    void UpdateAndroidOutputPreview();
++#endif
+ 	QPointer<QTimer> nudge_timer;
+ 	bool recent_nudge = false;
+ 
+diff --git a/obs-studio/frontend/widgets/OBSBasic_Preview.cpp b/obs-studio/frontend/widgets/OBSBasic_Preview.cpp
+index 2dc7bee..04be449 100755
+--- a/obs-studio/frontend/widgets/OBSBasic_Preview.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic_Preview.cpp
+@@ -21,6 +21,9 @@
+ 
+ #include <utility/AndroidMenuPos.hpp>
+ #ifdef __ANDROID__
++#include <utility/AndroidOutputPreviewPolicy.hpp>
++#endif
++#ifdef __ANDROID__
+ #include <utility/AndroidSafeMenu.hpp>
+ #endif
+ #include <utility/display-helpers.hpp>
+@@ -277,10 +280,40 @@ void OBSBasic::EnablePreviewDisplay(bool enable)
+ 	ui->previewDisabledWidget->setVisible(!enable);
+ }
+ 
++#ifdef __ANDROID__
++void OBSBasic::UpdateAndroidOutputPreview()
++{
++    const bool autoHide = config_get_bool(App()->GetUserConfig(), "BasicWindow",
++                                          "POCOAutoHidePreviewOnOutput");
++    const auto action = OBSAndroidPreviewTransition(
++        androidStreamOutputStarted, androidRecordOutputStarted, previewEnabled,
++        previewProgramMode, autoHide, androidPreviewHiddenByPerformanceMode);
++    if (action == OBSAndroidPreviewAction::Hide) {
++        EnablePreviewDisplay(false);
++        blog(LOG_INFO, "[POCO-performance] preview=off reason=live-or-recording stream=%d record=%d",
++             int(androidStreamOutputStarted), int(androidRecordOutputStarted));
++    } else if (action == OBSAndroidPreviewAction::Restore) {
++        if (!previewProgramMode)
++            EnablePreviewDisplay(previewEnabled);
++        blog(LOG_INFO, "[POCO-performance] preview=restored stream=%d record=%d",
++             int(androidStreamOutputStarted), int(androidRecordOutputStarted));
++    }
++}
++#endif
++
+ void OBSBasic::TogglePreview()
+ {
+-	previewEnabled = !previewEnabled;
+-	EnablePreviewDisplay(previewEnabled);
++#ifdef __ANDROID__
++    // If the user explicitly taps "Ativar prévia" while in performance mode,
++    // restore the preview without inverting the remembered on/off preference.
++    if (androidPreviewHiddenByPerformanceMode) {
++        androidPreviewHiddenByPerformanceMode = false;
++        EnablePreviewDisplay(previewEnabled);
++        return;
++    }
++#endif
++    previewEnabled = !previewEnabled;
++    EnablePreviewDisplay(previewEnabled);
+ }
+ 
+ void OBSBasic::addSnapGuide(SnapGuide guide)
+diff --git a/scripts/test-android-output-preview.cpp b/scripts/test-android-output-preview.cpp
+new file mode 100644
+index 0000000..7fc2ae2
+--- /dev/null
++++ b/scripts/test-android-output-preview.cpp
+@@ -0,0 +1,24 @@
++#include "../obs-studio/frontend/utility/AndroidOutputPreviewPolicy.hpp"
++#include <cassert>
++#include <iostream>
++int main()
++{
++    bool suppressed = false;
++    using A = OBSAndroidPreviewAction;
++    auto f = [&](bool streaming, bool recording, bool preview=true,
++                 bool studio=false, bool autoHide=true) {
++        return OBSAndroidPreviewTransition(streaming,recording,preview,
++                                          studio,autoHide,suppressed);
++    };
++    assert(f(false,false) == A::None);
++    assert(f(true,false) == A::Hide);
++    assert(f(true,true) == A::None);          // simultaneous live + recording
++    assert(f(false,true) == A::None);         // live stopped; still recording
++    assert(f(false,false) == A::Restore);     // both stopped
++    assert(f(false,true) == A::Hide);         // recording only
++    assert(f(false,true,true,false,false) == A::Restore); // opt-out
++    assert(f(false,true,true,false,true) == A::Hide); // opt back in
++    assert(f(false,true,true,true,true) == A::Restore); // Studio Mode
++    assert(f(false,false,false,false,true) == A::None);
++    std::cout << "PASS Android live preview state machine\n";
++}
