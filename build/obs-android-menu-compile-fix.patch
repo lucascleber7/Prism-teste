@@ -1,0 +1,14 @@
+diff --git a/obs-studio/frontend/widgets/OBSBasic_StudioMode.cpp b/obs-studio/frontend/widgets/OBSBasic_StudioMode.cpp
+index 72d3997..5c78d97 100755
+--- a/obs-studio/frontend/widgets/OBSBasic_StudioMode.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic_StudioMode.cpp
+@@ -384,6 +384,9 @@ OBSSource OBSBasic::GetProgramSource()
+ 
+ void OBSBasic::ProgramViewContextMenuRequested(const QPoint &pos)
+ {
++#ifdef __ANDROID__
++	Q_UNUSED(pos); // Android touch dialog does not use pointer coordinates.
++#endif
+ 	QMenu popup(this);
+ 	QPointer<QMenu> studioProgramProjector;
+ 
