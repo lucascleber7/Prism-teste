@@ -1,0 +1,47 @@
+diff --git a/PERFORMANCE_POCO_UBUNTU_PORT.md b/PERFORMANCE_POCO_UBUNTU_PORT.md
+index ed55a37..5f794ac 100644
+--- a/PERFORMANCE_POCO_UBUNTU_PORT.md
++++ b/PERFORMANCE_POCO_UBUNTU_PORT.md
+@@ -35,6 +35,11 @@ de 60 FPS sustentados.
+ 5. **Proteção contra interfaces pesadas**: prévia inativa durante live;
+    cenas e fontes de navegador não são apagadas automaticamente.
+ 
++6. **Telemetria de live no log do OBS a cada 10 segundos**: FPS real,
++   quadros renderizados e atrasados, quadros enviados e perdidos no RTMP,
++   sem chaves de transmissão ou URLs. Baseada nas métricas GetStats
++   usadas no Ubuntu para separar gargalo de renderização de queda de rede.
++
+ ## O que NÃO foi migrado
+ 
+ - VirGL/ANGLE/llvmpipe, Termux:X11, Openbox e Ubuntu PRoot.
+diff --git a/obs-studio/frontend/widgets/OBSBasic.cpp b/obs-studio/frontend/widgets/OBSBasic.cpp
+index 9728fe4..86c6295 100755
+--- a/obs-studio/frontend/widgets/OBSBasic.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic.cpp
+@@ -183,6 +183,26 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new
+         androidRecordOutputStarted = false;
+         UpdateAndroidOutputPreview();
+     });
++
++    // Port of Ubuntu/WebSocket GetStats diagnostics: one lightweight
++    // sample per 10 seconds while a native output is active.
++    // Never log the stream key, service URL, or user source settings.
++    QTimer *pocoMetricsTimer = new QTimer(this);
++    pocoMetricsTimer->setInterval(10000);
++    connect(pocoMetricsTimer, &QTimer::timeout, this, [this] {
++        if (!androidStreamOutputStarted && !androidRecordOutputStarted)
++            return;
++        OBSOutputAutoRelease stream = obs_frontend_get_streaming_output();
++        const int totalOutputFrames = stream ? obs_output_get_total_frames(stream) : 0;
++        const int droppedNetworkFrames = stream ? obs_output_get_frames_dropped(stream) : 0;
++        blog(LOG_INFO,
++             "[POCO-live-metrics] fps=%.2f render_total=%u render_lagged=%u "
++             "stream_output_frames=%d stream_network_dropped=%d streaming=%d recording=%d",
++             obs_get_active_fps(), obs_get_total_frames(), obs_get_lagged_frames(),
++             totalOutputFrames, droppedNetworkFrames,
++             int(androidStreamOutputStarted), int(androidRecordOutputStarted));
++    });
++    pocoMetricsTimer->start();
+ #endif
+ 
+ 	/* Set up streaming connections */
