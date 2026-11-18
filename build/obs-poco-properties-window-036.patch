@@ -1,0 +1,229 @@
+diff --git a/CORRECAO_JANELA_PRETA_036.md b/CORRECAO_JANELA_PRETA_036.md
+new file mode 100644
+index 0000000..51608bf
+--- /dev/null
++++ b/CORRECAO_JANELA_PRETA_036.md
+@@ -0,0 +1,24 @@
++# OBS POCO PRO 0.3.6: correção de janela preta nas propriedades
++
++## Sintoma
++Ao tocar duas vezes na fonte Imagem ou Compartilhamento de tela em Android, a janela de propriedades pode ultrapassar a altura útil do visor. Abre uma prévia escura em uma segunda superfície EGL e os botões de configuração e OK/Cancelar ficam inacessíveis.
++
++## Diagnóstico no código
++- OBSBasicProperties.ui contém splitter com altura mínima de 400 px e janela 720 × 580 px.
++- OBSBasicProperties cria OBSQTDisplay para prévia integrada ao diálogo, concorrendo com superfície nativa principal no backend Android.
++- Ajuste de tamanho ocorria antes de inserir a view dinâmica, permitindo reexpansão posterior.
++- Já existia prevenção parcial de janelas zumbis, que não resolve a concorrência da segunda superfície.
++
++## Correção
++1. Android oculta a prévia integrada somente nesse diálogo. O desktop mantém a prévia tradicional.
++2. O formulário de opções da fonte continua ativo e rolável.
++3. Reduz altura mínima e recalcula após inserir propriedades dinâmicas.
++4. Aplica limites de dimensão pela área útil da Activity.
++5. Mantém os botões de confirmação e o fluxo de salvar/cancelar.
++
++## Validação
++- Testes estáticos de regressão.
++- Compilação ARM64 no GitHub.
++- **Pendente:** teste físico no POCO em tela horizontal, tela vertical/multijanela, fontes imagem, captura de tela e câmera.
++- A correção da janela preta não implica que a fonte de captura de tela esteja enviando imagem. Esta depende de MediaProjection e de permissões.
++- A escolha de x264/MediaCodec por software/hardware no PC ou Android é independente desse bug.
+diff --git a/obs-studio/frontend/cmake/android/AndroidManifest.xml b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+index 4b124b8..ab39f70 100755
+--- a/obs-studio/frontend/cmake/android/AndroidManifest.xml
++++ b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+@@ -51,8 +51,8 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     package="com.obsproject.studio"
+     android:installLocation="auto"
+-    android:versionCode="32"
+-    android:versionName="0.3.5-poco">
++    android:versionCode="33"
++    android:versionName="0.3.6-poco">
+     <uses-permission android:name="android.permission.INTERNET"  />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"  />
+diff --git a/obs-studio/frontend/dialogs/OBSBasicProperties.cpp b/obs-studio/frontend/dialogs/OBSBasicProperties.cpp
+index 2a50016..3cd8c6b 100755
+--- a/obs-studio/frontend/dialogs/OBSBasicProperties.cpp
++++ b/obs-studio/frontend/dialogs/OBSBasicProperties.cpp
+@@ -84,7 +84,14 @@ OBSBasicProperties::OBSBasicProperties(QWidget *parent, OBSSource source_)
+ 	 * 约可用高的 1/5，夹在 60~120），不是写死的 80。用户还能拖分隔条自己调
+ 	 * （childrenCollapsible=false，不会拖没）。 */
+ 	ui->windowSplitter->setMinimumHeight(0);
+-	ui->preview->setMinimumHeight(androidPreviewMinHeight(this));
++    ui->preview->setMinimumHeight(0);
++    ui->previewFrame->setMinimumHeight(0);
++    ui->previewFrame->hide();
++    ui->transitionButton->hide();
++    // Avoid a second OBSQTDisplay EGL/native surface in an Android dialog.
++    // The main OBS preview keeps the only hardware surface. The Properties
++    // pane is a scroll area, so the source options remain editable.
++    setMinimumSize(0, 0);
+ #endif
+ 
+ 	if (cx > 400 && cy > 400) {
+@@ -107,7 +114,12 @@ OBSBasicProperties::OBSBasicProperties(QWidget *parent, OBSSource source_)
+ 	view = new OBSPropertiesView(nd_settings.Get(), source, (PropertiesReloadCallback)obs_source_properties,
+ 				     (PropertiesUpdateCallback) nullptr, // No special handling required for undo/redo
+ 				     (PropertiesVisualUpdateCb)obs_source_update);
++#ifdef __ANDROID__
++    view->setMinimumHeight(72);
++    view->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
++#else
+ 	view->setMinimumHeight(150);
++#endif
+ 
+ 	ui->propertiesLayout->addWidget(view);
+ 
+@@ -140,12 +152,20 @@ OBSBasicProperties::OBSBasicProperties(QWidget *parent, OBSSource source_)
+ 	uint32_t caps = obs_source_get_output_flags(source);
+ 	bool drawable_type = type == OBS_SOURCE_TYPE_INPUT || type == OBS_SOURCE_TYPE_SCENE;
+ 	bool drawable_preview = (caps & OBS_SOURCE_VIDEO) != 0;
++#ifdef __ANDROID__
++    // Android has one owned native OBS preview surface. Rendering a second
++    // preview in the properties dialog can create a black fullscreen Surface
++    // that obscures touch controls and stays visible after closing.
++    const bool allowEmbeddedPreview = false;
++#else
++    const bool allowEmbeddedPreview = true;
++#endif
+ 
+-	if (drawable_preview && drawable_type) {
++	if (allowEmbeddedPreview && drawable_preview && drawable_type) {
+ 		ui->preview->show();
+ 		connect(ui->preview, &OBSQTDisplay::DisplayCreated, this, addDrawCallback);
+ 
+-	} else if (type == OBS_SOURCE_TYPE_TRANSITION) {
++	} else if (allowEmbeddedPreview && type == OBS_SOURCE_TYPE_TRANSITION) {
+ 		sourceA = obs_source_create_private("scene", "sourceA", nullptr);
+ 		sourceB = obs_source_create_private("scene", "sourceB", nullptr);
+ 
+@@ -188,6 +208,18 @@ OBSBasicProperties::OBSBasicProperties(QWidget *parent, OBSSource source_)
+ 		ui->preview->hide();
+ 	}
+ 
++#ifdef __ANDROID__
++    ui->previewFrame->hide();
++    // Must fit *after* the dynamic properties view was inserted, otherwise
++    // QSplitter size hints can grow the window beyond the display later.
++    androidFitTopLevelToScreen(this);
++    const QRect usable = androidAvailableWindowRect(this);
++    if (!usable.isEmpty()) {
++        setMaximumSize(qMax(240, usable.width() - 16),
++                       qMax(180, usable.height() - 16));
++        androidFitTopLevelToScreen(this);
++    }
++#endif
+ 	connect(ui->defaultsButton, &QPushButton::clicked, this, &OBSBasicProperties::restoreDefaultsClicked);
+ }
+ 
+@@ -456,8 +488,10 @@ void OBSBasicProperties::Cleanup()
+ 	config_set_int(App()->GetAppConfig(), "PropertiesWindow", "cx", width());
+ 	config_set_int(App()->GetAppConfig(), "PropertiesWindow", "cy", height());
+ 
++#ifndef __ANDROID__
+ 	obs_display_remove_draw_callback(ui->preview->GetDisplay(), OBSBasicProperties::DrawPreview, this);
+ 	obs_display_remove_draw_callback(ui->preview->GetDisplay(), OBSBasicProperties::DrawTransitionPreview, this);
++#endif
+ 
+ #ifdef __ANDROID__
+ 	/* 所有关闭路径（确定 / 取消 / closeEvent）都经这里 —— 是"这个窗不再挡着预览"的
+@@ -510,9 +544,14 @@ bool OBSBasicProperties::nativeEvent(const QByteArray &, void *message, qintptr
+ 
+ void OBSBasicProperties::Init()
+ {
++#ifdef __ANDROID__
++    // Do not start or expose another native preview surface on Android.
++    // Keep the OK/Cancel row within the current Activity bounds.
++    androidFitTopLevelToScreen(this);
++#endif
+ 	show();
+ #ifdef __ANDROID__
+-	obsAndroidPreviewVisibilityChanged();
++    obsAndroidPreviewVisibilityChanged();
+ #endif
+ }
+ 
+diff --git a/scripts/test-android-network-optimizations.py b/scripts/test-android-network-optimizations.py
+index e859e84..46b9f86 100644
+--- a/scripts/test-android-network-optimizations.py
++++ b/scripts/test-android-network-optimizations.py
+@@ -18,6 +18,6 @@ assert 'OBS_ENCODER_CAP_DYN_BITRATE' in med
+ assert 'AMediaCodec_setParameters(e->codec, f)' in med
+ assert 'stream->dbr_enabled = dbr_capable && obs_data_get_bool(settings, OPT_DYN_BITRATE)' in rtmp
+ assert 'web.getSettings().setMediaPlaybackRequiresUserGesture(false)' in web
+-assert 'android:versionCode="32"' in manifest
+-assert 'android:versionName="0.3.5-poco"' in manifest
++assert 'android:versionCode="33"' in manifest
++assert 'android:versionName="0.3.6-poco"' in manifest
+ print("PASS POCO Android 0.3.2 network mitigation and WebView autoplay integration")
+diff --git a/scripts/test-poco-035-alpha-and-quick-actions.py b/scripts/test-poco-035-alpha-and-quick-actions.py
+index 7b18876..6a705d0 100644
+--- a/scripts/test-poco-035-alpha-and-quick-actions.py
++++ b/scripts/test-poco-035-alpha-and-quick-actions.py
+@@ -33,7 +33,7 @@ for name in ["POCOQuickScreenClicked","POCOQuickCameraClicked",
+              "POCOQuickOverlayClicked","POCOQuickMoreSourcesClicked","POCOQuickPluginsClicked"]:
+     assert name in controls and name in signals and name in basic, name
+ assert 'actionOpenPluginManager' in basic
+-assert 'versionCode="32"' in manifest
+-assert 'versionName="0.3.5-poco"' in manifest
++assert 'versionCode="33"' in manifest
++assert 'versionName="0.3.6-poco"' in manifest
+ assert 'android:debuggable="false"' in manifest
+ print("PASS: overlay transparency, browser fallback, plugin and source buttons")
+diff --git a/scripts/test-poco-hardware-network.py b/scripts/test-poco-hardware-network.py
+index f82250e..79a4f64 100644
+--- a/scripts/test-poco-hardware-network.py
++++ b/scripts/test-poco-hardware-network.py
+@@ -8,8 +8,8 @@ codec=(r/"obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCodecC
+ bar=(r/"obs-studio/frontend/widgets/OBSBasicStatusBar.cpp").read_text()
+ main=(r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
+ assert 'android.permission.ACCESS_NETWORK_STATE' in manifest
+-assert 'versionCode="32"' in manifest
+-assert 'versionName="0.3.5-poco"' in manifest
++assert 'versionCode="33"' in manifest
++assert 'versionName="0.3.6-poco"' in manifest
+ assert 'getActiveNetwork()' in java
+ assert 'getLinkUpstreamBandwidthKbps()' in java
+ assert 'NET_CAPABILITY_VALIDATED' in java
+diff --git a/scripts/test-poco-pc-overlay-migration.py b/scripts/test-poco-pc-overlay-migration.py
+index 4adab1a..30e01fa 100644
+--- a/scripts/test-poco-pc-overlay-migration.py
++++ b/scripts/test-poco-pc-overlay-migration.py
+@@ -6,8 +6,8 @@ basic = (r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
+ drop = (r/"obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp").read_text()
+ scenes = (r/"obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp").read_text()
+ manifest = (r/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
+-assert 'versionCode="32"' in manifest
+-assert 'versionName="0.3.5-poco"' in manifest
++assert 'versionCode="33"' in manifest
++assert 'versionName="0.3.6-poco"' in manifest
+ assert 'android:debuggable="false"' in manifest
+ assert 'OBS PC / LIVE Studio: adicionar overlay por link' in basic
+ assert 'QInputDialog::getText(' in basic
+diff --git a/scripts/test-poco-properties-window-036.py b/scripts/test-poco-properties-window-036.py
+new file mode 100644
+index 0000000..82e7f0e
+--- /dev/null
++++ b/scripts/test-poco-properties-window-036.py
+@@ -0,0 +1,19 @@
++#!/usr/bin/env python3
++"""Android source properties dialog layout regression."""
++from pathlib import Path
++root=Path(__file__).resolve().parents[1]
++s=(root/"obs-studio/frontend/dialogs/OBSBasicProperties.cpp").read_text()
++manifest=(root/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
++assert 'android:versionCode="33"' in manifest
++assert 'android:versionName="0.3.6-poco"' in manifest
++assert 'ui->previewFrame->hide()' in s
++assert 'const bool allowEmbeddedPreview = false;' in s
++assert 'const bool allowEmbeddedPreview = true;' in s
++assert 'if (allowEmbeddedPreview && drawable_preview && drawable_type)' in s
++assert 'else if (allowEmbeddedPreview && type == OBS_SOURCE_TYPE_TRANSITION)' in s
++assert 'view->setMinimumHeight(72);' in s
++assert 'setMaximumSize(qMax(240, usable.width() - 16)' in s
++assert s.count('androidFitTopLevelToScreen(this);') >= 3
++assert '#ifndef __ANDROID__\n\tobs_display_remove_draw_callback(ui->preview->GetDisplay()' in s
++assert 'obsAndroidPreviewVisibilityChanged();' in s
++print("PASS Android source properties: no second preview and bounded touch controls")
