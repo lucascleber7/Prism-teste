@@ -1,4 +1,4 @@
-name: OBS POCO PRO 0.3.2 - Native network stabilization and VDO.Ninja
+name: OBS POCO PRO 0.3.3 - Medidor de rede e hardware por chipset
 
 on:
   push:
@@ -91,6 +91,11 @@ jobs:
             -o "$RUNNER_TEMP/obs-poco-native-network-032.patch"
           git apply --check "$RUNNER_TEMP/obs-poco-native-network-032.patch"
           git apply "$RUNNER_TEMP/obs-poco-native-network-032.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/obs-poco-hardware-network-033.patch \
+            -o "$RUNNER_TEMP/obs-poco-hardware-network-033.patch"
+          git apply --check "$RUNNER_TEMP/obs-poco-hardware-network-033.patch"
+          git apply "$RUNNER_TEMP/obs-poco-hardware-network-033.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
@@ -105,6 +110,7 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror scripts/test-android-output-preview.cpp -o "$RUNNER_TEMP/obs-poco-output-preview-test"
           "$RUNNER_TEMP/obs-poco-output-preview-test"
           python3 scripts/test-android-network-optimizations.py
+          python3 scripts/test-poco-hardware-network.py
           python3 obs-studio/plugins/obs-outputs/tests/rtmp-dbr-test.py
 
       - name: Set up JDK 17
