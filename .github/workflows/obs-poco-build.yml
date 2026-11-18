@@ -66,6 +66,11 @@ jobs:
             -o "$RUNNER_TEMP/obs-android-qt-menu-crash-fix.patch"
           git apply --check "$RUNNER_TEMP/obs-android-qt-menu-crash-fix.patch"
           git apply "$RUNNER_TEMP/obs-android-qt-menu-crash-fix.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/obs-android-menu-compile-fix.patch \
+            -o "$RUNNER_TEMP/obs-android-menu-compile-fix.patch"
+          git apply --check "$RUNNER_TEMP/obs-android-menu-compile-fix.patch"
+          git apply "$RUNNER_TEMP/obs-android-menu-compile-fix.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
