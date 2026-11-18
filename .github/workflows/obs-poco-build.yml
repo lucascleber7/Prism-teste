@@ -1,4 +1,4 @@
-name: OBS POCO PRO 0.3.3 - Medidor de rede e hardware por chipset
+name: OBS POCO PRO 0.3.4 - OBS PC + LIVE Studio overlays
 
 on:
   push:
@@ -101,6 +101,11 @@ jobs:
             -o "$RUNNER_TEMP/obs-poco-network-033-cpp-build-fix.patch"
           git apply --check "$RUNNER_TEMP/obs-poco-network-033-cpp-build-fix.patch"
           git apply "$RUNNER_TEMP/obs-poco-network-033-cpp-build-fix.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/obs-poco-desktop-pc-tiktok-034.patch \
+            -o "$RUNNER_TEMP/obs-poco-desktop-pc-tiktok-034.patch"
+          git apply --check "$RUNNER_TEMP/obs-poco-desktop-pc-tiktok-034.patch"
+          git apply "$RUNNER_TEMP/obs-poco-desktop-pc-tiktok-034.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
@@ -116,6 +121,7 @@ jobs:
           "$RUNNER_TEMP/obs-poco-output-preview-test"
           python3 scripts/test-android-network-optimizations.py
           python3 scripts/test-poco-hardware-network.py
+          python3 scripts/test-poco-pc-overlay-migration.py
           python3 obs-studio/plugins/obs-outputs/tests/rtmp-dbr-test.py
 
       - name: Set up JDK 17
