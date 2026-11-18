@@ -1,0 +1,476 @@
+diff --git a/REDE_HARDWARE_MEDIATEK_SNAPDRAGON.md b/REDE_HARDWARE_MEDIATEK_SNAPDRAGON.md
+new file mode 100644
+index 0000000..8c575bd
+--- /dev/null
++++ b/REDE_HARDWARE_MEDIATEK_SNAPDRAGON.md
+@@ -0,0 +1,45 @@
++# OBS POCO PRO 0.3.3 — Rede e codificação por aparelho
++
++## Medidor de internet sem números falsos
++
++Barra do OBS Android:
++- `kbps` existente: taxa de upload REAL do fluxo RTMP obtida com `obs_output_get_total_bytes()`, em intervalo de dois segundos;
++- `Rede`: tipo de rede ativa (Wi-Fi, Móvel, USB/Ethernet ou VPN), capacidade estimada `link↑` do Android, indicador de Internet validada;
++- `Codec`: encoder efetivamente associado à saída de live. Diferencia MediaCodec HW e x264 software;
++- `Quadros perdidos`: OBS já exibe a porcentagem dos quadros perdidos no envio.
++
++**A capacidade estimada do link não equivale ao upload real do provedor.** O número de 250 Mbps de uma ligação Wi-Fi não garante 250 Mbps de upload para o servidor, assim como não indica um limite artificial do celular. O OBS pode fazer melhor uso do link, reduzir bitrate na congestão e reconectar, mas não desbloquear banda contratada. Este medidor não executa testes de tráfego nem gasta banda para simular velocidade.
++
++## Snapdragon, MediaTek e outros Androids
++
++O OBS deve consultar `MediaCodecInfo` em cada dispositivo para descobrir:
++1. `isHardwareAccelerated()` e `!isSoftwareOnly()`;
++2. `COLOR_FormatSurface` para captura GPU e encoder direto;
++3. tamanho, FPS e bitrate com `areSizeAndRateSupported()`;
++4. CBR e capacidades do codec escolhido;
++5. inicialização real por `AMediaCodec_start()` registrada com o nome do componente.
++
++MediaTek/Dimensity pode expor `c2.mtk.*` / `OMX.MTK.*`; Qualcomm/Snapdragon pode expor `c2.qti.*` / `OMX.qcom.*`. Esses nomes não devem ser codificados como regra universal: cada fabricante pode mudar os codecs anunciados. Outros chips Samsung, Unisoc e demais usam o mesmo processo de detecção, sem favoritismo por marca.
++
++**Encoder não é renderizador**: o primeiro cria H.264/HEVC, o segundo desenha a interface e a cena com GPU/driver. O menu `Ferramentas → POCO: verificar chip, GPU/codec e codificador em uso` informa separadamente o renderizador gráfico, o encoder configurado, o encoder associado ao output e os componentes MediaCodec elegíveis. O componente efetivamente iniciado fica registrado nos logs durante a live.
++
++## Correção de troca "continua no software"
++
++O preset legado do Ubuntu frequentemente tem `obs_x264` gravado. O valor salvo sobrepõe os padrões do Android. A mudança de GUI precisa ser aplicada quando o output não está ativo.
++
++Nova ação `Ferramentas → POCO: trocar entre MediaCodec HW / x264 SW (próxima live)`:
++- bloqueia a troca durante transmissão/gravação;
++- consulta o hardware para a resolução e FPS do perfil;
++- atualiza o perfil `SimpleOutput` **ou** `AdvOut` conforme o modo vigente;
++- salva o perfil e chama `ResetOutputs()` para criar de fato um novo encoder;
++- consulta novamente o encoder associado à saída e mostra qual foi aplicado.
++
++A seleção de hardware em Perfis Avançados também é o padrão para perfis novos se o dispositivo o suportar. Configurações já salvas não são sobrescritas.
++
++## Limitações e validação
++
++1. MediaCodec listado pelo Android pode falhar ao iniciar, mesmo quando reporta suporte. Precisamos testar capturas, bitrate e encoders físicos reais.
++2. Um encoder MediaCodec **não garante** que o renderizador GPU não seja software. O diagnóstico de GPU mostrará isso.
++3. FPS do OBS não é necessariamente o FPS do jogo capturado.
++4. A estabilidade da live com outra tela (RedMagic 11/Pad 8 Pro) e 1080p60 precisam de teste físico de ponta a ponta.
++5. **Sem root**: não desativar proteção térmica, não forçar CPU/GPU em frequência fixa, não alegar desbloqueio de Internet.
+diff --git a/obs-studio/frontend/cmake/android/AndroidManifest.xml b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+index a1a1d35..918072c 100755
+--- a/obs-studio/frontend/cmake/android/AndroidManifest.xml
++++ b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+@@ -51,9 +51,10 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     package="com.obsproject.studio"
+     android:installLocation="auto"
+-    android:versionCode="29"
+-    android:versionName="0.3.2-poco">
++    android:versionCode="30"
++    android:versionName="0.3.3-poco">
+     <uses-permission android:name="android.permission.INTERNET"  />
++    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"  />
+     <uses-permission android:name="android.permission.RECORD_AUDIO"  />
+     <!-- P-17：内置摄像头采集源（Camera2 NDK）。不申请这一条，ACameraManager_openCamera
+diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCodecCapabilities.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCodecCapabilities.java
+index 2a8784e..827b7a8 100644
+--- a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCodecCapabilities.java
++++ b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCodecCapabilities.java
+@@ -119,6 +119,28 @@ public final class ObsCodecCapabilities {
+         cache.put(key, names);
+         return names.clone();
+     }
++    /** The installed codec name is not sufficient proof that it started.
++     * This lists hardware candidates eligible for the requested stream;
++     * native MediaCodec logs confirm the component successfully started.
++     */
++    public static String deviceReport(int width, int height, int fpsNum, int fpsDen, int bitrateKbps) {
++        String soc = "Android";
++        if (Build.VERSION.SDK_INT >= 31) {
++            soc = Build.SOC_MANUFACTURER + " / " + Build.SOC_MODEL;
++        }
++        double fps = fpsDen > 0 ? (double) fpsNum / fpsDen : 0;
++        String[] avc = findEncodersMode("video/avc", width, height, fps,
++                Math.max(0, bitrateKbps) * 1000, 2);
++        String[] hevc = findEncodersMode("video/hevc", width, height, fps,
++                Math.max(0, bitrateKbps) * 1000, 2);
++        return "Chipset: " + soc + "\n"
++             + "Video: " + width + "x" + height + " @ " + fps + " FPS\n"
++             + "H.264 hardware CBR: " + (avc.length == 0 ? "indisponível" : String.join(", ", avc))
++             + "\nHEVC hardware CBR: " + (hevc.length == 0 ? "indisponível" : String.join(", ", hevc))
++             + "\nA escolha depende dos recursos detectados, não apenas da marca.\n"
++             + "Um codificador anunciado pelo Android ainda pode falhar ao iniciar.";
++    }
++
+     /** Returns mode support and the advertised complexity and CQ quality ranges. */
+     public static int[] encoderControls(String name, String mime, int mode) {
+         try {
+diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsNetworkStatus.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsNetworkStatus.java
+new file mode 100644
+index 0000000..d842e24
+--- /dev/null
++++ b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsNetworkStatus.java
+@@ -0,0 +1,42 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++package com.obsproject.studio;
++
++import android.content.Context;
++import android.net.ConnectivityManager;
++import android.net.Network;
++import android.net.NetworkCapabilities;
++import android.os.Build;
++
++/**
++ * Read-only, lightweight diagnostics. Estimated bandwidth from Android
++ * NetworkCapabilities is link information, not a speedtest or ISP guarantee.
++ * Live RTMP transmission rate is separately measured by libobs.
++ */
++public final class ObsNetworkStatus {
++    private ObsNetworkStatus() {}
++
++    public static String snapshot(Context context) {
++        if (context == null) return "indisponível|0|0|0";
++        try {
++            ConnectivityManager manager =
++                (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
++            if (manager == null) return "indisponível|0|0|0";
++            Network network = manager.getActiveNetwork();
++            if (network == null) return "desconectado|0|0|0";
++            NetworkCapabilities caps = manager.getNetworkCapabilities(network);
++            if (caps == null) return "indisponível|0|0|0";
++            String transport;
++            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) transport = "USB/Ethernet";
++            else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) transport = "Wi-Fi";
++            else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) transport = "Móvel";
++            else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) transport = "VPN";
++            else transport = "outra";
++            int up = Math.max(0, caps.getLinkUpstreamBandwidthKbps());
++            int valid = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) ? 1 : 0;
++            int metered = caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) ? 0 : 1;
++            return transport + "|" + up + "|" + valid + "|" + metered;
++        } catch (RuntimeException ex) {
++            return "sem permissão|0|0|0";
++        }
++    }
++}
+diff --git a/obs-studio/frontend/widgets/OBSBasic.cpp b/obs-studio/frontend/widgets/OBSBasic.cpp
+index d7718b2..6c9bcce 100755
+--- a/obs-studio/frontend/widgets/OBSBasic.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic.cpp
+@@ -72,6 +72,11 @@
+ #include <qt-wrappers.hpp>
+ 
+ #include <QActionGroup>
++#ifdef __ANDROID__
++#include <QJniObject>
++#include <QMessageBox>
++#include <graphics/graphics.h>
++#endif
+ #include <QCoreApplication>
+ #include <QThread>
+ #include <QWidgetAction>
+@@ -1004,6 +1009,12 @@ void OBSBasic::InitBasicConfigDefaults2()
+ #endif
+ 	config_set_default_string(activeConfiguration, "SimpleOutput", "StreamEncoder", defaultEncoder);
+ 	config_set_default_string(activeConfiguration, "SimpleOutput", "RecEncoder", defaultEncoder);
++#ifdef __ANDROID__
++    // Also prefer hardware in Advanced mode for newly created profiles.
++    // Existing explicit x264 selections remain untouched until opted in.
++    config_set_default_string(activeConfiguration, "AdvOut", "Encoder",
++                              useAndroid ? "android_mediacodec_h264" : "obs_x264");
++#endif
+ 
+ 	const char *aac_default = "ffmpeg_aac";
+ 	if (EncoderAvailable("CoreAudio_AAC")) {
+@@ -1112,6 +1123,102 @@ void OBSBasic::OBSInit()
+ 	if (!InitBasicConfig()) {
+ 		throw "Failed to load basic.ini";
+ 	}
++#ifdef __ANDROID__
++    // Existing profiles can pin x264 even when MediaCodec becomes available.
++    // Switching the combobox is not enough: rebuild the output when idle,
++    // and report the actual encoder attached to the running stream.
++    QAction *pocoCodecReport = ui->menuTools->addAction(
++        QStringLiteral("POCO: verificar chip, GPU/codec e codificador em uso"));
++    connect(pocoCodecReport, &QAction::triggered, this, [this] {
++        struct obs_video_info video{};
++        obs_get_video_info(&video);
++        uint32_t fpsNum = 0, fpsDen = 0;
++        GetConfigFPS(fpsNum, fpsDen);
++        const bool advanced = astrcmpi(config_get_string(activeConfiguration, "Output", "Mode"),
++                                        "Advanced") == 0;
++        const char *configured = config_get_string(
++            activeConfiguration, advanced ? "AdvOut" : "SimpleOutput",
++            advanced ? "Encoder" : "StreamEncoder");
++        const int bitrate = int(config_get_int(activeConfiguration, "SimpleOutput", "VBitrate"));
++        const QJniObject device = QJniObject::callStaticObjectMethod(
++            "com/obsproject/studio/ObsCodecCapabilities", "deviceReport",
++            "(IIIII)Ljava/lang/String;",
++            jint(video.output_width), jint(video.output_height),
++            jint(fpsNum), jint(fpsDen), jint(bitrate));
++        QString diagnostic = device.isValid() ? device.toString()
++                                              : QStringLiteral("Capacidades indisponíveis.");
++        obs_enter_graphics();
++        const char *renderer = gs_get_device_name();
++        const QString rendererName = renderer ? QString::fromUtf8(renderer)
++                                               : QStringLiteral("(desconhecido)");
++        obs_leave_graphics();
++        diagnostic += QStringLiteral("\nRenderizador gráfico real: ") + rendererName;
++        diagnostic += QStringLiteral("\nPerfil selecionado: %1").arg(
++            QString::fromUtf8(configured ? configured : "(nenhum)"));
++        OBSOutputAutoRelease streaming = obs_frontend_get_streaming_output();
++        obs_encoder_t *attached = streaming ? obs_output_get_video_encoder(streaming) : nullptr;
++        const char *actualId = attached ? obs_encoder_get_id(attached) : nullptr;
++        diagnostic += QStringLiteral("\nEncoder associado à saída: %1").arg(
++            actualId ? QString::fromUtf8(actualId) : QStringLiteral("(nenhum)"));
++        diagnostic += QStringLiteral(
++            "\nEsse item é o codificador do vídeo, não o driver gráfico. "
++            "O componente MediaCodec efetivamente iniciado aparece no log do OBS.");
++        QMessageBox::information(this, QStringLiteral("Diagnóstico POCO de vídeo"), diagnostic);
++    });
++
++    QAction *pocoSwitchCodec = ui->menuTools->addAction(
++        QStringLiteral("POCO: trocar entre MediaCodec HW / x264 SW (próxima live)"));
++    connect(pocoSwitchCodec, &QAction::triggered, this, [this] {
++        if (Active()) {
++            QMessageBox::warning(this, QStringLiteral("Saída ativa"),
++                                 QStringLiteral("Encerre a live e a gravação antes de trocar "
++                                                "o codificador. Assim a transmissão não é interrompida."));
++            return;
++        }
++        const bool advanced = astrcmpi(config_get_string(activeConfiguration, "Output", "Mode"),
++                                        "Advanced") == 0;
++        const char *section = advanced ? "AdvOut" : "SimpleOutput";
++        const char *key = advanced ? "Encoder" : "StreamEncoder";
++        const char *current = config_get_string(activeConfiguration, section, key);
++        const bool hardwareSelected = current && (strncmp(current, "android_mediacodec", 18) == 0);
++        if (!hardwareSelected) {
++            uint32_t fpsNum = 0, fpsDen = 0;
++            GetConfigFPS(fpsNum, fpsDen);
++            const uint32_t width = uint32_t(config_get_uint(activeConfiguration, "Video", "OutputCX"));
++            const uint32_t height = uint32_t(config_get_uint(activeConfiguration, "Video", "OutputCY"));
++            if (!EncoderAvailable("android_mediacodec_h264") ||
++                !OBSAndroidAvcAvailable(width, height, fpsNum, fpsDen)) {
++                QMessageBox::warning(this, QStringLiteral("MediaCodec indisponível"),
++                                     QStringLiteral("Este aparelho não anunciou um codificador "
++                                                    "H.264 por hardware compatível com o perfil "
++                                                    "atual. Ajuste resolução/FPS ou mantenha x264."));
++                return;
++            }
++        }
++        const char *next = hardwareSelected ? (advanced ? "obs_x264" : SIMPLE_ENCODER_X264)
++                                             : (advanced ? "android_mediacodec_h264"
++                                                         : SIMPLE_ENCODER_ANDROID_MEDIACODEC);
++        config_set_string(activeConfiguration, section, key, next);
++        activeConfiguration.SaveSafe("tmp");
++        ResetOutputs(); // Force the effective OBS output encoder to be rebuilt now, while idle.
++        OBSOutputAutoRelease output = obs_frontend_get_streaming_output();
++        obs_encoder_t *attached = output ? obs_output_get_video_encoder(output) : nullptr;
++        const char *applied = attached ? obs_encoder_get_id(attached) : nullptr;
++        blog(LOG_INFO, "[POCO-codec-switch] configured=%s attached=%s hardware_requested=%d",
++             next, applied ? applied : "(none)", !hardwareSelected);
++        const bool matched = applied &&
++            ((hardwareSelected && strcmp(applied, "obs_x264") == 0) ||
++             (!hardwareSelected && strcmp(applied, "android_mediacodec_h264") == 0));
++        QMessageBox::information(this, QStringLiteral("Codificador OBS"),
++            QStringLiteral("Selecionado: %1\nAssociado à saída: %2\n%3\n"
++                           "A confirmação do componente de hardware ocorre ao iniciar a live.")
++                .arg(QString::fromUtf8(next),
++                     applied ? QString::fromUtf8(applied) : QStringLiteral("(indisponível)"),
++                     matched ? QStringLiteral("Troca aplicada ao OBS.")
++                             : QStringLiteral("Ainda não confirmado. Confira o diagnóstico.")));
++    });
++#endif
++
+ #ifdef __ANDROID__
+     // Create after the profile loads; profile settings are not yet
+     // initialized in the QWidget constructor.
+diff --git a/obs-studio/frontend/widgets/OBSBasicStatusBar.cpp b/obs-studio/frontend/widgets/OBSBasicStatusBar.cpp
+index 010e05e..35bbfd2 100755
+--- a/obs-studio/frontend/widgets/OBSBasicStatusBar.cpp
++++ b/obs-studio/frontend/widgets/OBSBasicStatusBar.cpp
+@@ -5,6 +5,13 @@
+ 
+ #include "moc_OBSBasicStatusBar.cpp"
+ 
++#ifdef __ANDROID__
++#include <QJniObject>
++#include <QLabel>
++#include <QLayout>
++#include <QStringList>
++#endif
++
+ static constexpr int bitrateUpdateSeconds = 2;
+ static constexpr int congestionUpdateSeconds = 4;
+ static constexpr float excellentThreshold = 0.0f;
+@@ -34,9 +41,25 @@ OBSBasicStatusBar::OBSBasicStatusBar(QWidget *parent)
+ 	statusWidget->ui->recordTime->setDisabled(true);
+ 	statusWidget->ui->delayFrame->hide();
+ 	statusWidget->ui->issuesFrame->hide();
+-	statusWidget->ui->kbps->hide();
+-
+-	addPermanentWidget(statusWidget, 1);
++\tstatusWidget->ui->kbps->hide();
++#ifdef __ANDROID__
++    // One read-only network meter for any vendor: the Android link estimate
++    // is distinct from the true RTMP bitrate already shown by libobs.
++    androidNetworkLabel = new QLabel(QStringLiteral("Rede: verificando"), statusWidget);
++    androidNetworkLabel->setToolTip(QStringLiteral(
++        "Link estimado pelo Android, não é teste de upload. "
++        "O kbps ao lado é a transmissão real do OBS."));
++    statusWidget->ui->networkFrame->layout()->addWidget(androidNetworkLabel);
++    androidEncoderLabel = new QLabel(QStringLiteral("Codec: aguardando live"), statusWidget);
++    statusWidget->ui->networkFrame->layout()->addWidget(androidEncoderLabel);
++    QTimer *networkTimer = new QTimer(this);
++    networkTimer->setInterval(3000);
++    connect(networkTimer, &QTimer::timeout, this, &OBSBasicStatusBar::UpdateAndroidNetworkInfo);
++    networkTimer->start();
++    UpdateAndroidNetworkInfo();
++#endif
++
++\taddPermanentWidget(statusWidget, 1);
+ 	setMinimumHeight(statusWidget->height());
+ 
+ 	UpdateIcons();
+@@ -49,6 +72,55 @@ OBSBasicStatusBar::OBSBasicStatusBar(QWidget *parent)
+ 	clearMessage();
+ }
+ 
++#ifdef __ANDROID__
++void OBSBasicStatusBar::UpdateAndroidNetworkInfo()
++{
++    if (!androidNetworkLabel)
++        return;
++    QJniObject ctx = QJniObject::callStaticObjectMethod(
++        "org/qtproject/qt/android/QtNative", "getContext",
++        "()Landroid/content/Context;");
++    if (!ctx.isValid())
++        return;
++
++    const QJniObject snap = QJniObject::callStaticObjectMethod(
++        "com/obsproject/studio/ObsNetworkStatus", "snapshot",
++        "(Landroid/content/Context;)Ljava/lang/String;",
++        ctx.object<jobject>());
++    if (!snap.isValid())
++        return;
++    const QStringList columns = snap.toString().split(QLatin1Char('|'));
++    if (columns.size() != 4)
++        return;
++    const int estimatedUpKbps = columns.at(1).toInt();
++    const bool validated = columns.at(2) == QLatin1String("1");
++    QString label = QStringLiteral("Rede: ") + columns.at(0);
++    if (estimatedUpKbps > 0)
++        label += QStringLiteral(" | enlace ↑ ≈%1 Mb/s")
++                     .arg(double(estimatedUpKbps) / 1000.0, 0, 'f', 1);
++    if (!validated)
++        label += QStringLiteral(" (sem validação)");
++    androidNetworkLabel->setText(label);
++
++    if (!androidEncoderLabel)
++        return;
++    OBSOutput stream = OBSGetStrongRef(streamOutput);
++    if (!stream || !obs_output_active(stream)) {
++        androidEncoderLabel->setText(QStringLiteral("Codec: aguardando live"));
++        return;
++    }
++    obs_encoder_t *encoder = obs_output_get_video_encoder(stream);
++    const char *id = encoder ? obs_encoder_get_id(encoder) : nullptr;
++    if (!id)
++        androidEncoderLabel->setText(QStringLiteral("Codec: indisponível"));
++    else if (QString::fromUtf8(id).startsWith(QLatin1String("android_mediacodec")))
++        androidEncoderLabel->setText(QStringLiteral("Codec: MediaCodec HW"));
++    else
++        androidEncoderLabel->setText(QStringLiteral("Codec: software (%1)")
++                                     .arg(QString::fromUtf8(id)));
++}
++#endif
++
+ void OBSBasicStatusBar::Activate()
+ {
+ 	if (!active) {
+@@ -196,6 +268,13 @@ void OBSBasicStatusBar::UpdateBandwidth()
+ 	text += QString::number(kbitsPerSec, 'f', 0) + QString(" kbps");
+ 
+ 	statusWidget->ui->kbps->setText(text);
++#ifdef __ANDROID__
++    statusWidget->ui->kbps->setToolTip(
++        QStringLiteral("Upload real da live: %1. "
++                       "O enlace estimado não é a velocidade real da internet. "
++                       "Consulte os quadros perdidos para avaliar estabilidade.")
++            .arg(text));
++#endif
+ 	statusWidget->ui->kbps->setMinimumWidth(statusWidget->ui->kbps->width());
+ 
+ 	if (!statusWidget->ui->kbps->isVisible()) {
+diff --git a/obs-studio/frontend/widgets/OBSBasicStatusBar.hpp b/obs-studio/frontend/widgets/OBSBasicStatusBar.hpp
+index 6ccc90f..3e0738d 100755
+--- a/obs-studio/frontend/widgets/OBSBasicStatusBar.hpp
++++ b/obs-studio/frontend/widgets/OBSBasicStatusBar.hpp
+@@ -8,6 +8,7 @@
+ #include <QStatusBar>
+ 
+ class QTimer;
++class QLabel;
+ 
+ class OBSBasicStatusBar : public QStatusBar {
+ 	Q_OBJECT
+@@ -62,6 +63,11 @@ private:
+ 
+ 	QPointer<QTimer> refreshTimer;
+ 	QPointer<QTimer> messageTimer;
++#ifdef __ANDROID__
++    QLabel *androidNetworkLabel = nullptr;
++    QLabel *androidEncoderLabel = nullptr;
++    void UpdateAndroidNetworkInfo();
++#endif
+ 
+ 	obs_output_t *GetOutput();
+ 
+diff --git a/scripts/test-android-network-optimizations.py b/scripts/test-android-network-optimizations.py
+index 96e138c..e1bb0f2 100644
+--- a/scripts/test-android-network-optimizations.py
++++ b/scripts/test-android-network-optimizations.py
+@@ -18,6 +18,6 @@ assert 'OBS_ENCODER_CAP_DYN_BITRATE' in med
+ assert 'AMediaCodec_setParameters(e->codec, f)' in med
+ assert 'stream->dbr_enabled = dbr_capable && obs_data_get_bool(settings, OPT_DYN_BITRATE)' in rtmp
+ assert 'web.getSettings().setMediaPlaybackRequiresUserGesture(false)' in web
+-assert 'android:versionCode="29"' in manifest
+-assert 'android:versionName="0.3.2-poco"' in manifest
++assert 'android:versionCode="30"' in manifest
++assert 'android:versionName="0.3.3-poco"' in manifest
+ print("PASS POCO Android 0.3.2 network mitigation and WebView autoplay integration")
+diff --git a/scripts/test-poco-hardware-network.py b/scripts/test-poco-hardware-network.py
+new file mode 100644
+index 0000000..0a6c9da
+--- /dev/null
++++ b/scripts/test-poco-hardware-network.py
+@@ -0,0 +1,35 @@
++#!/usr/bin/env python3
++"""OBS POCO Android 0.3.3 integration: network and encoder observability."""
++from pathlib import Path
++r=Path(__file__).resolve().parents[1]
++manifest=(r/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
++java=(r/"obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsNetworkStatus.java").read_text()
++codec=(r/"obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCodecCapabilities.java").read_text()
++bar=(r/"obs-studio/frontend/widgets/OBSBasicStatusBar.cpp").read_text()
++main=(r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
++assert 'android.permission.ACCESS_NETWORK_STATE' in manifest
++assert 'versionCode="30"' in manifest
++assert 'versionName="0.3.3-poco"' in manifest
++assert 'getActiveNetwork()' in java
++assert 'getLinkUpstreamBandwidthKbps()' in java
++assert 'NET_CAPABILITY_VALIDATED' in java
++assert 'TrafficStats' not in java  # Do not confuse all app traffic with OBS stream bytes.
++assert 'static String deviceReport' in codec
++assert 'findEncodersMode("video/avc"' in codec
++assert 'findEncodersMode("video/hevc"' in codec
++assert 'isHardwareAccelerated()' in codec
++assert 'isSoftwareOnly()' in codec
++assert 'UpdateAndroidNetworkInfo()' in bar
++assert 'obs_output_get_total_bytes(output)' in bar
++assert 'obs_output_get_video_encoder(stream)' in bar
++assert 'Codec: MediaCodec HW' in bar
++assert 'Codec: software (' in bar
++assert 'get_simple_output_encoder' not in bar
++assert 'POCO: trocar entre MediaCodec HW / x264 SW (próxima live)' in main
++assert 'if (Active())' in main
++assert 'ResetOutputs(); // Force the effective OBS output encoder' in main
++assert 'obs_output_get_video_encoder(output)' in main
++assert 'gs_get_device_name()' in main
++assert 'SIMPLE_ENCODER_ANDROID_MEDIACODEC' in main
++assert 'config_set_default_string(activeConfiguration, "AdvOut", "Encoder",' in main
++print("PASS: Network bandwidth estimate vs observed RTMP, hardware selection, renderer diagnostics")
