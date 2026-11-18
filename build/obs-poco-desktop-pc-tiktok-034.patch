@@ -1,0 +1,291 @@
+diff --git a/ENGENHARIA_REVERSA_OBS_PC_LIVE_STUDIO_20261118.md b/ENGENHARIA_REVERSA_OBS_PC_LIVE_STUDIO_20261118.md
+new file mode 100644
+index 0000000..7305319
+--- /dev/null
++++ b/ENGENHARIA_REVERSA_OBS_PC_LIVE_STUDIO_20261118.md
+@@ -0,0 +1,64 @@
++# Engenharia reversa comparativa: OBS Studio PC 33.0.1, TikTok LIVE Studio e OBS POCO PRO Android
++
++Auditoria realizada: 18 de novembro de 2026.
++
++## Arquivos legítimos recuperados e verificados
++1. OBS Studio 33.0.1 **fontes oficiais**, versão de 29/10/2026: `~/obs-dev/reverse-engineering-pc/OBS-Studio-33.0.1-Sources.tar.gz`, SHA-256 `c8d3a8f69a0f17970ac0a8f2a2462f1bc4dacd324f6da0c4b408d442d4798913`; expandido em `obs-studio-33.0.1-sources/`.
++2. OBS Studio 33.0.1 **instalador oficial Windows x64**: `~/obs-dev/reverse-engineering-pc/OBS-Studio-33.0.1-Windows-x64-Installer.exe`, SHA-256 `37ecde4d9a28e8aeeb07623c8469b5d558eb264e02ccf435bb859891c401758b`. Não foi executado no Android.
++3. TikTok LIVE Studio: página oficial `https://www.tiktok.com/studio/download` recuperada em `tiktok_live_studio_official_download_page.html`. O instalador PC não foi recuperado: site não apresentou URL de pacote direta sem sessão. Não usar terceiros ou inventar instalador.
++4. OBS for Android original: APK ARM64 `/sdcard/Download/OBS-Android-arm64-v8a-release.apk` no POCO, hash `fa19a1821b5bad697750642c52cd460b5bbc2fd753f96ff7398b7d13d53d3ed6`, código-fonte Keee7/OBS-for-Android.
++5. OBS POCO PRO 0.3.3: projeto no Xiaomi Pad 6 em `~/obs-dev/OBS-for-Android` e CI GitHub em `lucascleber7/Prism-teste`.
++
++## A diferença entre OBS PC e nosso APK
++| Função do desktop | Implementação no OBS PC | Situação do Android | Solução |
++| --- | --- | --- | --- |
++| Fonte de navegador | obs-browser + CEF/Chromium 150, acesso a áudio e interação | android-browser WebView, sem PCM no mixer | Portar UX e adicionar backend Android audio em etapa posterior |
++| OBS WebSocket | Plugin obs-websocket do OBS PC | Não empacotado no APK Android | Avaliar port seguro com autenticação e rede local |
++| Fontes de URL arrastadas/coladas | DropType_Url cria browser_source | Antes tentava browser_source, não registrado no Android | **Corrigido**: DropType_Url cria android_browser_source |
++| Cenas PC importadas | JSON registra browser_source | Android não reconhecia esse ID | **Corrigido**: mapear os IDs em memória antes de obs_load_sources, preservando settings |
++| Fontes de áudio PC | WASAPI, PulseAudio, PipeWire, CoreAudio | AAudio Android, áudio de browser sem PCM | Roteamento e mixer por APIs Android |
++| Captura desktop/jogos | Win capture, PipeWire/Wayland, XSHM | MediaProjection + Camera2 + USB UVC | Priorizar capturas nativas; evitar portas incompatíveis |
++| Plugins e scripts | Plugin Manager, Lua/Python scripting e plugins x64 | ABI ARM64 Android, importação experimental | Porta individual por licença e ABI; nunca carregar .dll Windows como .so Android |
++| Streaming avançado | RTMP, SRT/WebRTC conforme módulos e build | RTMP e FFmpeg; suporte a outros protocolos depende de bibliotecas | Teste real por plataforma e hardware |
++| Hardware desktop | NVENC/QSV/AMF/videotoolbox | MediaCodec Android H.264/HEVC (e formatos detectados) | Seleção por capacidades, não nome MediaTek/Snapdragon |
++| Camadas e layouts | OBS PC suporta muitas fontes, Studio Mode e snapping | Qt portátil, limitações de toque | Melhorar painéis pequenos, previews e controles de câmera |
++| Métricas e hotkeys | Stats e fontes com controles | Métricas básicas e diagnóstico nativo POCO | Overlay Android com permissão e FPS por origem |
++
++## O que aproveitar da UX do TikTok LIVE Studio
++Conforme páginas oficiais/públicas de recursos e documentação de overlays:
++- Adicionar **fonte de Link**, de câmera e de tela por botões simples.
++- Painel de cena vertical e troca rápida de cena de jogo/câmera/chat.
++- Widget de chat e alertas de presentes, seguidores e metas para LIVE.
++- Teste/prévia antes de entrar ao vivo, monitor de qualidade e recursos de moderação.
++- Conexão TikTok autorizada só via fluxo permitido por TikTok; acesso à live não é garantido a todas as contas.
++- **Não copiar módulos, protocolo privado, credenciais ou pacote proprietário**. Reimplementar as funções de interface de maneira independente e legal.
++
++## Melhorias implementadas nesta revisão 0.3.4
++1. **Ferramentas → OBS PC / LIVE Studio: adicionar overlay por link**: entrada HTTP(S) validada com `QInputDialog`, cria fonte Android WebView na cena selecionada, reaproveitando o fluxo original do OBS PC com nome único e undo/redo; não imprime a URL em logs.
++2. **Arrastar/colar URL do PC**: `DropType_Url` agora escolhe `android_browser_source` em Android e mantém `browser_source` no desktop, com limite inicial de 30 FPS para WebView.
++3. **Importar cenas do OBS desktop/Ubuntu**: nas coleções de cena, converte `id` e `versioned_id` de `browser_source` para `android_browser_source`, preservando URL, CSS, dimensões e opções. Não falsifica compatibilidade com fontes de áudio PulseAudio e XSHM.
++4. **Segurança**: compilação de produção muda o manifesto para `android:debuggable=false`.
++5. **Versão**: `0.3.4-poco`, versionCode 31.
++6. **Não há integração de áudio PCM de páginas WebView**. TikFinity/OWN3D podem mostrar vídeo/gráficos; alertas sonoros necessitam backend de captura/roteamento de áudio.
++7. **Não é um cliente TikTok LIVE oficial**. Link de overlay não equivale a acesso autorizado aos eventos de conta ou transmissões.
++
++## Falta fazer: prioridades
++P0. Testar ao vivo 1080p60, perdas de rede, estabilidade de encoder, temperatura, áudio, alternância de aplicativos e reabertura de fontes.
++P0. Receber de RedMagic 11 por USB real, com áudio, confiabilidade e latência medida.
++P1. Captura de áudio de WebView/overlays no mixer, sem capturar microfone indevidamente.
++P1. Portar OBS WebSocket autenticado do código-fonte desktop quando o ambiente ARM64 permitir.
++P1. Introduzir painel flutuante de FPS OBS/encoder/transferência, com consentimento do Android; não confundir FPS de jogo.
++P1. Assistentes Camera2/UVC/TikFinity/OWN3D e reconhecimento da plataforma, com teste de acessibilidade.
++P1. Migrar perfis e fontes antigas (18 perfis, 9 coleções) com validação e sem expor stream keys.
++P2. Melhorar layouts verticais e interface no POCO.
++P2. Avaliar segurança do backup de dados/stream keys, `android:allowBackup`, armazenamento de credenciais.
++P3. Portar demais módulos desktop apenas se compatíveis e úteis.
++
++## Critérios de aceitação
++- O APK Android compila e a assinatura permite atualização sem perder configurações.
++- Adicionar link cria `android_browser_source`, aparece na cena, abre propriedades e pode ser removida/desfeita.
++- Coleções desktop importadas mantêm suas fontes navegador e URLs; as fontes incompatíveis aparecem como avisos claros.
++- O pipeline de câmera/tela/áudio e OBS Live estável deve ser testado fisicamente; builds automatizadas não bastam.
++
++## Licença e origem
++OBS Studio é GPL-2.0-or-later, preservar créditos e licenças. TikTok LIVE Studio é proprietário, apenas análise comportamental/documentada de recursos e interface, sem decompilação de módulos não autorizados ou redistribuição de código proprietário.
+diff --git a/obs-studio/frontend/cmake/android/AndroidManifest.xml b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+index 918072c..6e9ab5f 100755
+--- a/obs-studio/frontend/cmake/android/AndroidManifest.xml
++++ b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+@@ -51,8 +51,8 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     package="com.obsproject.studio"
+     android:installLocation="auto"
+-    android:versionCode="30"
+-    android:versionName="0.3.3-poco">
++    android:versionCode="31"
++    android:versionName="0.3.4-poco">
+     <uses-permission android:name="android.permission.INTERNET"  />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"  />
+@@ -93,7 +93,7 @@
+     <application
+         android:name="org.qtproject.qt.android.bindings.QtApplication"
+         android:hardwareAccelerated="true"
+-        android:debuggable="true"
++        android:debuggable="false"
+         android:label="OBS POCO PRO"
+         android:icon="@mipmap/ic_launcher"
+         android:roundIcon="@mipmap/ic_launcher"
+diff --git a/obs-studio/frontend/widgets/OBSBasic.cpp b/obs-studio/frontend/widgets/OBSBasic.cpp
+index 6c9bcce..f46c2d1 100755
+--- a/obs-studio/frontend/widgets/OBSBasic.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic.cpp
+@@ -75,6 +75,9 @@
+ #ifdef __ANDROID__
+ #include <QJniObject>
+ #include <QMessageBox>
++#include <QInputDialog>
++#include <QLineEdit>
++#include <QUrl>
+ #include <graphics/graphics.h>
+ #endif
+ #include <QCoreApplication>
+@@ -1124,6 +1127,51 @@ void OBSBasic::OBSInit()
+ 		throw "Failed to load basic.ini";
+ 	}
+ #ifdef __ANDROID__
++    // OBS PC and LIVE Studio both support pasting a web link as a scene
++    // layer. Reuse OBS desktop's full undo/redo source pipeline but map the
++    // CEF browser type to Android WebView (no CEF, no extra process).
++    QAction *pocoAddOverlay = ui->menuTools->addAction(
++        QStringLiteral("OBS PC / LIVE Studio: adicionar overlay por link"));
++    connect(pocoAddOverlay, &QAction::triggered, this, [this] {
++        if (!GetCurrentScene()) {
++            QMessageBox::warning(this, QStringLiteral("Nenhuma cena selecionada"),
++                                 QStringLiteral("Crie ou selecione uma cena antes de adicionar um overlay."));
++            return;
++        }
++        bool accepted = false;
++        const QString pasted = QInputDialog::getText(
++            this, QStringLiteral("Adicionar fonte por link"),
++            QStringLiteral("Cole o link HTTPS do seu overlay (TikFinity, OWN3D, VDO.Ninja etc.):"),
++            QLineEdit::Normal, QString(), &accepted).trimmed();
++        if (!accepted || pasted.isEmpty())
++            return;
++        const QUrl url = QUrl::fromUserInput(pasted);
++        if (!url.isValid() ||
++            (url.scheme() != QLatin1String("https") && url.scheme() != QLatin1String("http")) ||
++            url.host().isEmpty()) {
++            QMessageBox::warning(this, QStringLiteral("URL inválida"),
++                                 QStringLiteral("Use um link HTTP ou HTTPS completo. "
++                                                "Não informe senha de conta nem chave RTMP aqui."));
++            return;
++        }
++        if (!obs_source_get_display_name("android_browser_source")) {
++            QMessageBox::warning(this, QStringLiteral("Fonte de navegador indisponível"),
++                                 QStringLiteral("O plugin Android WebView não carregou. "
++                                                "Verifique os plugins e o log do OBS."));
++            return;
++        }
++        // AddDropSource creates a unique source name, attaches it to the
++        // active scene and registers undo/redo. Do not log URL tokens.
++        const QByteArray encodedUrl = url.toString(QUrl::FullyEncoded).toUtf8();
++        AddDropSource(encodedUrl.constData(), DropType_Url);
++        blog(LOG_INFO, "[POCO-overlay] Android WebView source requested for current scene");
++        QMessageBox::information(this, QStringLiteral("Overlay adicionado"),
++            QStringLiteral("O link foi enviado à fonte Navegador Android. "
++                           "Verifique a imagem na prévia e ajuste tamanho/transparência "
++                           "nas propriedades. Áudio de páginas WebView ainda não "
++                           "é enviado ao mixer do OBS."));
++    });
++
+     // Existing profiles can pin x264 even when MediaCodec becomes available.
+     // Switching the combobox is not enough: rebuild the output when idle,
+     // and report the actual encoder attached to the running stream.
+diff --git a/obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp b/obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp
+index 3ab81d9..354bb0f 100755
+--- a/obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp
+@@ -173,7 +173,14 @@ void OBSBasic::AddDropSource(const char *data, DropType image)
+ 		break;
+ 	case DropType_Url:
+ 		AddDropURL(QUrl(data), name, settings, ovi);
++#ifdef __ANDROID__
++        // OBS desktop's drag/drop URL API must resolve to the Android WebView
++        // source, not the absent CEF-only "browser_source" plugin.
++        type = "android_browser_source";
++        obs_data_set_int(settings, "fps", 30);
++#else
+ 		type = "browser_source";
++#endif
+ 		break;
+ 	}
+ 
+diff --git a/obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp b/obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp
+index 8885dd7..a9d0b78 100755
+--- a/obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp
+@@ -28,6 +28,7 @@
+ 
+ #include <filesystem>
+ #include <string>
++#include <cstring>
+ #include <vector>
+ 
+ extern bool safe_mode;
+@@ -1272,6 +1273,36 @@ void OBSBasic::LoadData(obs_data_t *data, SceneCollection &collection)
+ 	} else {
+ 		obs_data_array_push_back_array(sources, groups);
+ 	}
++#ifdef __ANDROID__
++    // The official PC OBS scene files record browser layers as browser_source.
++    // On Android our available backend is android_browser_source (WebView).
++    // Migrate in memory before obs_load_sources() so OWN3D/TikFinity web
++    // overlays survive importing a desktop scene collection. Do not remap
++    // Linux PulseAudio/XSHM sources to unrelated Android devices.
++    size_t mappedBrowsers = 0;
++    if (sources && obs_source_get_display_name("android_browser_source")) {
++        const size_t count = obs_data_array_count(sources);
++        for (size_t i = 0; i < count; ++i) {
++            OBSDataAutoRelease source = obs_data_array_item(sources, i);
++            if (!source)
++                continue;
++            const char *id = obs_data_get_string(source, "id");
++            const char *versionedId = obs_data_get_string(source, "versioned_id");
++            if ((id && strcmp(id, "browser_source") == 0) ||
++                (versionedId && strcmp(versionedId, "browser_source") == 0)) {
++                obs_data_set_string(source, "id", "android_browser_source");
++                obs_data_set_string(source, "versioned_id", "android_browser_source");
++                OBSDataAutoRelease settings = obs_data_get_obj(source, "settings");
++                if (settings && !obs_data_has_user_value(settings, "fps"))
++                    obs_data_set_int(settings, "fps", 30);
++                ++mappedBrowsers;
++            }
++        }
++    }
++    if (mappedBrowsers)
++        blog(LOG_INFO, "[POCO-desktop-import] browser sources converted to Android WebView: %zu",
++             mappedBrowsers);
++#endif
+ 
+ 	bool resetVideo = false;
+ 	obs_video_info ovi;
+diff --git a/scripts/test-android-network-optimizations.py b/scripts/test-android-network-optimizations.py
+index e1bb0f2..7dff2b8 100644
+--- a/scripts/test-android-network-optimizations.py
++++ b/scripts/test-android-network-optimizations.py
+@@ -18,6 +18,6 @@ assert 'OBS_ENCODER_CAP_DYN_BITRATE' in med
+ assert 'AMediaCodec_setParameters(e->codec, f)' in med
+ assert 'stream->dbr_enabled = dbr_capable && obs_data_get_bool(settings, OPT_DYN_BITRATE)' in rtmp
+ assert 'web.getSettings().setMediaPlaybackRequiresUserGesture(false)' in web
+-assert 'android:versionCode="30"' in manifest
+-assert 'android:versionName="0.3.3-poco"' in manifest
++assert 'android:versionCode="31"' in manifest
++assert 'android:versionName="0.3.4-poco"' in manifest
+ print("PASS POCO Android 0.3.2 network mitigation and WebView autoplay integration")
+diff --git a/scripts/test-poco-hardware-network.py b/scripts/test-poco-hardware-network.py
+index 69ed227..1cf5756 100644
+--- a/scripts/test-poco-hardware-network.py
++++ b/scripts/test-poco-hardware-network.py
+@@ -8,8 +8,8 @@ codec=(r/"obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCodecC
+ bar=(r/"obs-studio/frontend/widgets/OBSBasicStatusBar.cpp").read_text()
+ main=(r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
+ assert 'android.permission.ACCESS_NETWORK_STATE' in manifest
+-assert 'versionCode="30"' in manifest
+-assert 'versionName="0.3.3-poco"' in manifest
++assert 'versionCode="31"' in manifest
++assert 'versionName="0.3.4-poco"' in manifest
+ assert 'getActiveNetwork()' in java
+ assert 'getLinkUpstreamBandwidthKbps()' in java
+ assert 'NET_CAPABILITY_VALIDATED' in java
+diff --git a/scripts/test-poco-pc-overlay-migration.py b/scripts/test-poco-pc-overlay-migration.py
+new file mode 100644
+index 0000000..0692ab0
+--- /dev/null
++++ b/scripts/test-poco-pc-overlay-migration.py
+@@ -0,0 +1,29 @@
++#!/usr/bin/env python3
++"""Verify that OBS Studio PC link sources remain usable on Android."""
++from pathlib import Path
++r = Path(__file__).resolve().parents[1]
++basic = (r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
++drop = (r/"obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp").read_text()
++scenes = (r/"obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp").read_text()
++manifest = (r/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
++assert 'versionCode="31"' in manifest
++assert 'versionName="0.3.4-poco"' in manifest
++assert 'android:debuggable="false"' in manifest
++assert 'OBS PC / LIVE Studio: adicionar overlay por link' in basic
++assert 'QInputDialog::getText(' in basic
++assert 'url.scheme() != QLatin1String("https")' in basic
++assert 'url.scheme() != QLatin1String("http")' in basic
++assert 'obs_source_get_display_name("android_browser_source")' in basic
++assert 'AddDropSource(encodedUrl.constData(), DropType_Url)' in basic
++assert 'browser_source' in drop and 'android_browser_source' in drop
++assert '#ifdef __ANDROID__\n        // OBS desktop' in drop
++assert 'obs_data_set_int(settings, "fps", 30)' in drop
++assert 'const size_t count = obs_data_array_count(sources)' in scenes
++assert 'strcmp(id, "browser_source") == 0' in scenes
++assert 'strcmp(versionedId, "browser_source") == 0' in scenes
++assert 'obs_data_set_string(source, "id", "android_browser_source")' in scenes
++assert 'obs_data_set_string(source, "versioned_id", "android_browser_source")' in scenes
++assert 'obs_data_get_obj(source, "settings")' in scenes
++assert 'obs_data_get_string(source, "url")' not in scenes  # URL data never logged
++assert 'obs_data_set_string(settings, "url"' not in scenes  # preserve original secrets and source URL
++print("PASS: OBS PC URL overlay, Android source alias, scene migration, debug hardening")
