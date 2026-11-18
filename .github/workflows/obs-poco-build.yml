@@ -1,4 +1,4 @@
-name: OBS POCO PRO 0.3.1 - Ubuntu live performance and diagnostics
+name: OBS POCO PRO 0.3.2 - Native network stabilization and VDO.Ninja
 
 on:
   push:
@@ -86,6 +86,11 @@ jobs:
             -o "$RUNNER_TEMP/obs-poco-ubuntu-live-metrics.patch"
           git apply --check "$RUNNER_TEMP/obs-poco-ubuntu-live-metrics.patch"
           git apply "$RUNNER_TEMP/obs-poco-ubuntu-live-metrics.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/obs-poco-native-network-032.patch \
+            -o "$RUNNER_TEMP/obs-poco-native-network-032.patch"
+          git apply --check "$RUNNER_TEMP/obs-poco-native-network-032.patch"
+          git apply "$RUNNER_TEMP/obs-poco-native-network-032.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
@@ -99,6 +104,8 @@ jobs:
           grep -q 'rtmp_listen=1' obs-studio/plugins/obs-ffmpeg/obs-ffmpeg-source.c
           c++ -std=c++17 -Wall -Wextra -Werror scripts/test-android-output-preview.cpp -o "$RUNNER_TEMP/obs-poco-output-preview-test"
           "$RUNNER_TEMP/obs-poco-output-preview-test"
+          python3 scripts/test-android-network-optimizations.py
+          python3 obs-studio/plugins/obs-outputs/tests/rtmp-dbr-test.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
