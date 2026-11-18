@@ -56,6 +56,11 @@ jobs:
             -o "$RUNNER_TEMP/obs-poco.patch"
           git apply --check "$RUNNER_TEMP/obs-poco.patch"
           git apply "$RUNNER_TEMP/obs-poco.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/obs-remote-android-wifi-usb.patch \
+            -o "$RUNNER_TEMP/obs-remote-android-wifi-usb.patch"
+          git apply --check "$RUNNER_TEMP/obs-remote-android-wifi-usb.patch"
+          git apply "$RUNNER_TEMP/obs-remote-android-wifi-usb.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
@@ -65,6 +70,7 @@ jobs:
           c++ -std=c++17 -Wall -Wextra -Werror \
             scripts/test-android-plugin-import.cpp -o "$RUNNER_TEMP/obs-plugin-import-test"
           "$RUNNER_TEMP/obs-plugin-import-test"
+          python3 scripts/test-android-remote-source.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
