@@ -1,4 +1,4 @@
-name: OBS POCO PRO 0.3.5 - GPU Mali MediaCodec x264 plus overlays
+name: OBS POCO PRO 0.3.6 - Janela de propriedades sem tela preta
 
 on:
   push:
@@ -111,6 +111,11 @@ jobs:
             -o "$RUNNER_TEMP/obs-poco-three-paths-035.patch"
           git apply --check "$RUNNER_TEMP/obs-poco-three-paths-035.patch"
           git apply "$RUNNER_TEMP/obs-poco-three-paths-035.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/obs-poco-properties-window-036.patch \
+            -o "$RUNNER_TEMP/obs-poco-properties-window-036.patch"
+          git apply --check "$RUNNER_TEMP/obs-poco-properties-window-036.patch"
+          git apply "$RUNNER_TEMP/obs-poco-properties-window-036.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
@@ -128,6 +133,7 @@ jobs:
           python3 scripts/test-poco-hardware-network.py
           python3 scripts/test-poco-pc-overlay-migration.py
           python3 scripts/test-poco-035-alpha-and-quick-actions.py
+          python3 scripts/test-poco-properties-window-036.py
           python3 scripts/test-poco-three-video-paths.py
           python3 obs-studio/plugins/obs-outputs/tests/rtmp-dbr-test.py
 
