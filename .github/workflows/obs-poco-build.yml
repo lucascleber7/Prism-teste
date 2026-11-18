@@ -1,4 +1,4 @@
-name: OBS POCO PRO 0.3.1 Android - Ubuntu performance port
+name: OBS POCO PRO 0.3.1 - Ubuntu live performance and diagnostics
 
 on:
   push:
@@ -81,6 +81,11 @@ jobs:
             -o "$RUNNER_TEMP/obs-poco-version-031.patch"
           git apply --check "$RUNNER_TEMP/obs-poco-version-031.patch"
           git apply "$RUNNER_TEMP/obs-poco-version-031.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/obs-poco-ubuntu-live-metrics.patch \
+            -o "$RUNNER_TEMP/obs-poco-ubuntu-live-metrics.patch"
+          git apply --check "$RUNNER_TEMP/obs-poco-ubuntu-live-metrics.patch"
+          git apply "$RUNNER_TEMP/obs-poco-ubuntu-live-metrics.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
