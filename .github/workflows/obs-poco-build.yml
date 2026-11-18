@@ -1,4 +1,4 @@
-name: OBS POCO X7 Pro custom Android APK
+name: OBS POCO PRO 0.3.0 Android - Qt crash fix
 
 on:
   push:
@@ -61,6 +61,11 @@ jobs:
             -o "$RUNNER_TEMP/obs-remote-android-wifi-usb.patch"
           git apply --check "$RUNNER_TEMP/obs-remote-android-wifi-usb.patch"
           git apply "$RUNNER_TEMP/obs-remote-android-wifi-usb.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/obs-android-qt-menu-crash-fix.patch \
+            -o "$RUNNER_TEMP/obs-android-qt-menu-crash-fix.patch"
+          git apply --check "$RUNNER_TEMP/obs-android-qt-menu-crash-fix.patch"
+          git apply "$RUNNER_TEMP/obs-android-qt-menu-crash-fix.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
@@ -139,6 +144,17 @@ jobs:
             echo "FATAL: Qt 宿主缺 androiddeployqt（aqt 安装不完整？）" >&2
             exit 1
           }
+
+      - name: Test Android safe-touch menu with Qt Widgets
+        run: |
+          set -euo pipefail
+          HOST_QT="$HOME/Qt/$QT_VERSION/gcc_64"
+          cmake -S scripts/android-touch-menu-test -B "$RUNNER_TEMP/obs-touch-menu-test" -G Ninja \
+            -DCMAKE_PREFIX_PATH="$HOST_QT" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/obs-touch-menu-test" --parallel 2
+          QT_QPA_PLATFORM=offscreen QT_PLUGIN_PATH="$HOST_QT/plugins" \
+            LD_LIBRARY_PATH="$HOST_QT/lib:${LD_LIBRARY_PATH:-}" \
+            ctest --test-dir "$RUNNER_TEMP/obs-touch-menu-test" --output-on-failure
 
       # ---- ccache：编译对象缓存（deps 与主构建共用一份） ----
       # key 带 sha + run_attempt：同一提交的手动 re-run 不会因 immutable key 报
