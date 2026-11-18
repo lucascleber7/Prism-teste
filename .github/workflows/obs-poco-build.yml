@@ -96,6 +96,11 @@ jobs:
             -o "$RUNNER_TEMP/obs-poco-hardware-network-033.patch"
           git apply --check "$RUNNER_TEMP/obs-poco-hardware-network-033.patch"
           git apply "$RUNNER_TEMP/obs-poco-hardware-network-033.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/obs-poco-network-033-cpp-build-fix.patch \
+            -o "$RUNNER_TEMP/obs-poco-network-033-cpp-build-fix.patch"
+          git apply --check "$RUNNER_TEMP/obs-poco-network-033-cpp-build-fix.patch"
+          git apply "$RUNNER_TEMP/obs-poco-network-033-cpp-build-fix.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
