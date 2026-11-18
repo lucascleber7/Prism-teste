@@ -71,6 +71,7 @@ jobs:
             scripts/test-android-plugin-import.cpp -o "$RUNNER_TEMP/obs-plugin-import-test"
           "$RUNNER_TEMP/obs-plugin-import-test"
           python3 scripts/test-android-remote-source.py
+          grep -q 'rtmp_listen=1' obs-studio/plugins/obs-ffmpeg/obs-ffmpeg-source.c
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
