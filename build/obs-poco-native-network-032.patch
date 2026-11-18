@@ -1,0 +1,124 @@
+diff --git a/PERFORMANCE_POCO_UBUNTU_PORT.md b/PERFORMANCE_POCO_UBUNTU_PORT.md
+index 5f794ac..1b9ded2 100644
+--- a/PERFORMANCE_POCO_UBUNTU_PORT.md
++++ b/PERFORMANCE_POCO_UBUNTU_PORT.md
+@@ -57,3 +57,20 @@ de 60 FPS sustentados.
+   modo Studio e desativação voluntária.
+ - Compilar e instalar APK ARM64 ainda é necessário para testes de campo,
+   incluindo carga de GPU, MediaCodec, fonte remota e transmissão.
++
++
++## Atualização 0.3.2: estabilização de conexão para live
++
++7. Em Android, a opção do OBS DynamicBitrate começa ativada por padrão
++   se o perfil não tiver uma preferência gravada. A saída RTMP já consegue
++   ajustar a taxa de bits do MediaCodec H.264/HEVC em modo CBR. Não funciona
++   com modo CQ ou atraso de transmissão. Um perfil com opção previamente
++   desligada é respeitado; o usuário pode ativar em Ferramentas.
++8. Na perda prolongada de conexão, novas configurações tentam reconectar
++   100 vezes, a cada 2 segundos. O servidor pode encerrar a live mesmo assim.
++9. O WebView Android permite autoplay de vídeo da fonte Navegador para
++   facilitar VDO.Ninja. Áudio da página não foi integrado ao mixer.
++10. Versão 0.3.2-poco com versionCode=29.
++11. Bitrate variável não cria capacidade de upload. Uma perda de cerca de
++    70% na live exige medir a conexão real do POCO e, se necessário,
++    reduzir o bitrate máximo de saída.
+diff --git a/obs-studio/frontend/cmake/android/AndroidManifest.xml b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+index 109cbe9..a1a1d35 100755
+--- a/obs-studio/frontend/cmake/android/AndroidManifest.xml
++++ b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+@@ -51,8 +51,8 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     package="com.obsproject.studio"
+     android:installLocation="auto"
+-    android:versionCode="28"
+-    android:versionName="0.3.1-poco">
++    android:versionCode="29"
++    android:versionName="0.3.2-poco">
+     <uses-permission android:name="android.permission.INTERNET"  />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"  />
+     <uses-permission android:name="android.permission.RECORD_AUDIO"  />
+diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsBrowserHost.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsBrowserHost.java
+index 5873fe4..1ed05bf 100644
+--- a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsBrowserHost.java
++++ b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsBrowserHost.java
+@@ -160,6 +160,8 @@ public final class ObsBrowserHost {
+         web.setBackgroundColor(Color.TRANSPARENT);
+         web.getSettings().setJavaScriptEnabled(true);
+         web.getSettings().setDomStorageEnabled(true);
++        // WebRTC viewer pages in a Browser Source have no ordinary tap UI.
++        web.getSettings().setMediaPlaybackRequiresUserGesture(false);
+         web.getSettings().setAllowFileAccess(false);
+         web.getSettings().setAllowContentAccess(false);
+         web.setWebViewClient(new WebViewClient() {
+diff --git a/obs-studio/frontend/widgets/OBSBasic.cpp b/obs-studio/frontend/widgets/OBSBasic.cpp
+index 86c6295..d7718b2 100755
+--- a/obs-studio/frontend/widgets/OBSBasic.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic.cpp
+@@ -870,7 +870,15 @@ bool OBSBasic::InitBasicConfigDefaults()
+ 
+ 	config_set_default_bool(activeConfiguration, "Output", "Reconnect", true);
+ 	config_set_default_uint(activeConfiguration, "Output", "RetryDelay", 2);
++#ifdef __ANDROID__
++    // OBS 32.2.2 on Ubuntu suffered catastrophic RTMP drops when the upload
++    // couldn't sustain the configured bitrate. MediaCodec supports dynamic
++    // bitrate in CBR mode: preserve full-resolution output when possible.
++    config_set_default_bool(activeConfiguration, "Output", "DynamicBitrate", true);
++    config_set_default_uint(activeConfiguration, "Output", "MaxRetries", 100);
++#else
+ 	config_set_default_uint(activeConfiguration, "Output", "MaxRetries", 25);
++#endif
+ 
+ 	config_set_default_string(activeConfiguration, "Output", "BindIP", "default");
+ 	config_set_default_string(activeConfiguration, "Output", "IPFamily", "IPv4+IPv6");
+@@ -1104,6 +1112,21 @@ void OBSBasic::OBSInit()
+ 	if (!InitBasicConfig()) {
+ 		throw "Failed to load basic.ini";
+ 	}
++#ifdef __ANDROID__
++    // Create after the profile loads; profile settings are not yet
++    // initialized in the QWidget constructor.
++    QAction *pocoNetworkAction = ui->menuTools->addAction(
++        QStringLiteral("POCO: adaptar bitrate à internet (próxima live)"));
++    pocoNetworkAction->setCheckable(true);
++    pocoNetworkAction->setChecked(config_get_bool(
++        activeConfiguration, "Output", "DynamicBitrate"));
++    connect(pocoNetworkAction, &QAction::toggled, this, [this](bool enabled) {
++        config_set_bool(activeConfiguration, "Output", "DynamicBitrate", enabled);
++        activeConfiguration.SaveSafe("tmp");
++        blog(LOG_INFO, "[POCO-network] dynamic-bitrate=%s applies-on=next-live",
++             enabled ? "enabled" : "disabled");
++    });
++#endif
+ 	if (!ResetAudio()) {
+ 		throw "Failed to initialize audio";
+ 	}
+diff --git a/scripts/test-android-network-optimizations.py b/scripts/test-android-network-optimizations.py
+new file mode 100644
+index 0000000..96e138c
+--- /dev/null
++++ b/scripts/test-android-network-optimizations.py
+@@ -0,0 +1,23 @@
++#!/usr/bin/env python3
++"""Regression checks for POCO Android native upload mitigation."""
++from pathlib import Path
++r=Path(__file__).resolve().parents[1]
++obs=(r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
++med=(r/"obs-studio/plugins/android-mediacodec/android-mediacodec.c").read_text()
++rtmp=(r/"obs-studio/plugins/obs-outputs/rtmp-stream.c").read_text()
++web=(r/"obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsBrowserHost.java").read_text()
++manifest=(r/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
++assert '#ifdef __ANDROID__\n    // OBS 32.2.2 on Ubuntu' in obs
++assert 'config_set_default_bool(activeConfiguration, "Output", "DynamicBitrate", true)' in obs
++assert 'config_set_default_uint(activeConfiguration, "Output", "MaxRetries", 100)' in obs
++assert 'pocoNetworkAction->setChecked(config_get_bool(' in obs
++assert 'config_set_bool(activeConfiguration, "Output", "DynamicBitrate", enabled)' in obs
++assert 'activeConfiguration.SaveSafe("tmp")' in obs
++assert 'obs_data_set_default_int(s, "rate_mode", 2)' in med
++assert 'OBS_ENCODER_CAP_DYN_BITRATE' in med
++assert 'AMediaCodec_setParameters(e->codec, f)' in med
++assert 'stream->dbr_enabled = dbr_capable && obs_data_get_bool(settings, OPT_DYN_BITRATE)' in rtmp
++assert 'web.getSettings().setMediaPlaybackRequiresUserGesture(false)' in web
++assert 'android:versionCode="29"' in manifest
++assert 'android:versionName="0.3.2-poco"' in manifest
++print("PASS POCO Android 0.3.2 network mitigation and WebView autoplay integration")
