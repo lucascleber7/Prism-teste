@@ -76,6 +76,11 @@ jobs:
             -o "$RUNNER_TEMP/obs-poco-ubuntu-native-performance.patch"
           git apply --check "$RUNNER_TEMP/obs-poco-ubuntu-native-performance.patch"
           git apply "$RUNNER_TEMP/obs-poco-ubuntu-native-performance.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/obs-poco-version-031.patch \
+            -o "$RUNNER_TEMP/obs-poco-version-031.patch"
+          git apply --check "$RUNNER_TEMP/obs-poco-version-031.patch"
+          git apply "$RUNNER_TEMP/obs-poco-version-031.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
