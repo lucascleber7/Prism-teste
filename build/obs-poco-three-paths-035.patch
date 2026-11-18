@@ -1,0 +1,500 @@
+diff --git a/TRES_CAMINHOS_GPU_MEDIACODEC_CPU.md b/TRES_CAMINHOS_GPU_MEDIACODEC_CPU.md
+new file mode 100644
+index 0000000..8ec9f31
+--- /dev/null
++++ b/TRES_CAMINHOS_GPU_MEDIACODEC_CPU.md
+@@ -0,0 +1,32 @@
++# Três caminhos de vídeo — OBS POCO PRO 0.3.5
++
++## Verificação no POCO X7 Pro, 18/11/2026
++O APK ARM64 instalado continha:
++- `lib/arm64-v8a/libobs-opengl.so`: frontend e libobs desenham usando EGL + OpenGL ES 3.x. O smartphone anuncia a GPU Mali e Vulkan no Android, mas ESTE APK **não possui libobs-vulkan**. Vulkan não é um backend alternativo do OBS aqui.
++- `assets/obs-plugins/android-mediacodec.so`: MediaCodec H.264/HEVC pela superfície GPU. O plugin consulta `MediaCodecInfo` no aparelho e só considera componentes isHardwareAccelerated, !isSoftwareOnly, Surface input e dimensões/FPS compatíveis. O log comprova início real `[android-mediacodec] ... event=started ... component=... hardware=true`.
++- `assets/obs-plugins/obs-x264.so`: codificação H.264 pela CPU. SimpleOutput usa preset de software com fallback `ultrafast` salvo se usuário escolheu outro.
++
++## Como os caminhos funcionam juntos
++1. **GPU OpenGL ES** desenha e compõe cenas, captura e overlays.
++2. Na saída, **MediaCodec hardware** codifica H.264 com menor trabalho de CPU quando suporta a resolução, taxa e colorimetria.
++3. **x264 CPU** funciona como opção de compatibilidade quando MediaCodec não serve. Ele ainda depende da GPU para renderização, a menos que um futuro renderizador completo via CPU seja desenvolvido.
++
++Não são três motores alternativos de renderização, são três componentes complementares. Trocar o encoder não altera o renderer de GPU. E uso de hardware não resolve perda de upload.
++
++## Alterações de interface
++- Botão visível **GPU / HW / CPU** em Controles.
++- Diagnóstico mostra renderizador do driver gráfico, se há indício de renderizador por software, codificadores MediaCodec CBR compatíveis com vídeo atual e disponibilidade do x264.
++- Menu Ferramentas mantém escolha entre x264 e MediaCodec quando nenhuma saída está ativa, salva perfil, chama ResetOutputs e verifica o encoder efetivamente associado ao output.
++- Bloqueia a troca para x264 quando seu plugin não foi carregado. Em Vulkan, informa explicitamente que falta backend.
++- Códigos dos outros botões (câmera, captura, overlays, plugins) e ajustes de transparência da versão 0.3.5 estão preservados.
++
++## O que ainda exige teste físico
++- Iniciar o OBS no POCO e consultar o nome do GL_RENDERER real (pode ser Mali ou renderizador por software).
++- Usar o MediaCodec em gravação curta, confirmar `event=started`, produzir quadros e parar sem travar.
++- Mudar para x264 com live/gravação parada, gravar vídeo curto e verificar saída e FPS.
++- Medir consumo de CPU/GPU/temperatura, FPS na saída e perdas durante live.
++- Snapdragon/RedMagic e chipsets variados precisam de testes equivalentes.
++- Backend Vulkan OBS Android ainda exige desenvolvimento separado; ter Vulkan no dispositivo não prova suporte da engine.
++
++## Critério de conclusão
++"Presente no APK" não significa "testado em funcionamento". A integração de três módulos é verificada no binário e via testes. A validação real no aparelho não pode ser afirmada até observar GPU driver e gravar vídeos com cada encoder.
+diff --git a/obs-studio/frontend/cmake/android/AndroidManifest.xml b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+index 6e9ab5f..4b124b8 100755
+--- a/obs-studio/frontend/cmake/android/AndroidManifest.xml
++++ b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+@@ -51,8 +51,8 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     package="com.obsproject.studio"
+     android:installLocation="auto"
+-    android:versionCode="31"
+-    android:versionName="0.3.4-poco">
++    android:versionCode="32"
++    android:versionName="0.3.5-poco">
+     <uses-permission android:name="android.permission.INTERNET"  />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"  />
+diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsBrowserHost.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsBrowserHost.java
+index 1ed05bf..af2d9f3 100644
+--- a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsBrowserHost.java
++++ b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsBrowserHost.java
+@@ -167,13 +167,20 @@ public final class ObsBrowserHost {
+         web.setWebViewClient(new WebViewClient() {
+             @Override public void onPageFinished(WebView view, String pageUrl) {
+                 if (closed || view != web) return;
+-                // Author styles are appended after this one, so a page that
+-                // paints its own background keeps it.
++                // Overlay pages regularly declare an opaque HTML/BODY
++                // background after loading. The old style had insufficient
++                // priority and was inserted BEFORE their own styles, so the
++                // background won and the stream showed a black rectangle.
++                // Force transparency only on root elements, not content
++                // cards/canvases, to preserve the overlay graphics themselves.
+                 if (transparent) {
+-                    view.evaluateJavascript("(function(){if(document.getElementById('__obs_transparent'))return;" +
+-                            "var s=document.createElement('style');s.id='__obs_transparent';" +
+-                            "s.textContent='html,body{background-color:transparent}';" +
+-                            "document.head.insertBefore(s,document.head.firstChild);})()", null);
++                    view.evaluateJavascript("(function(){var s=document.getElementById('__obs_transparent');" +
++                            "if(!s){s=document.createElement('style');s.id='__obs_transparent';}" +
++                            "s.textContent='html,body{background:transparent !important;" +
++                            "background-color:transparent !important;" +
++                            "background-image:none !important;}';" +
++                            "(document.head||document.documentElement).appendChild(s);" +
++                            "})()", null);
+                 }
+                 if (css != null && !css.isEmpty()) {
+                     String quoted = JSONObject.quote(css);
+diff --git a/obs-studio/frontend/widgets/OBSBasic.cpp b/obs-studio/frontend/widgets/OBSBasic.cpp
+index f46c2d1..222e403 100755
+--- a/obs-studio/frontend/widgets/OBSBasic.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic.cpp
+@@ -331,6 +331,85 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new
+ 	/* Parenting is done there so controls will be deleted alongside controlsDock */
+ 	controlsDock->setWidget(controls);
+ 
++#ifdef __ANDROID__
++    // Visible dashboard actions. Do not alter existing collections, scene
++    // files, or previous sources; create only on an explicit user tap.
++    auto addPocoSource = [this](const char *type, const QString &baseName) {
++        OBSScene scene = GetCurrentScene();
++        if (!scene) {
++            QMessageBox::warning(this, QStringLiteral("Nenhuma cena"),
++                                 QStringLiteral("Selecione uma cena primeiro."));
++            return;
++        }
++        if (!obs_source_get_display_name(type)) {
++            QMessageBox::warning(this, QStringLiteral("Plugin não encontrado"),
++                                 QStringLiteral("Fonte não disponível. Confira os plugins do APK."));
++            return;
++        }
++
++        QString chosenName = baseName;
++        for (int suffix = 2; suffix < 999; ++suffix) {
++            OBSSourceAutoRelease existing = obs_get_source_by_name(chosenName.toUtf8().constData());
++            if (!existing)
++                break;
++            chosenName = baseName + QStringLiteral(" %1").arg(suffix);
++        }
++        OBSDataAutoRelease settings = obs_data_create();
++        OBSSourceAutoRelease source = obs_source_create(
++            type, chosenName.toUtf8().constData(), settings, nullptr);
++        if (!source) {
++            QMessageBox::warning(this, QStringLiteral("Falha de captura"),
++                                 QStringLiteral("O OBS não conseguiu criar a fonte."));
++            return;
++        }
++        if (!obs_scene_add(scene, source)) {
++            QMessageBox::warning(this, QStringLiteral("Falha de cena"),
++                                 QStringLiteral("O OBS não conseguiu adicionar a fonte à cena."));
++            return;
++        }
++        blog(LOG_INFO, "[POCO-quick-source] type=%s added-to-current-scene", type);
++        obs_frontend_open_source_properties(source);
++    };
++    connect(controls, &OBSBasicControls::POCOQuickScreenClicked, this,
++            [addPocoSource] { addPocoSource("android_screen_capture", QStringLiteral("Tela Android")); });
++    connect(controls, &OBSBasicControls::POCOQuickCameraClicked, this,
++            [addPocoSource] { addPocoSource("android_camera_input", QStringLiteral("Câmera Android")); });
++    connect(controls, &OBSBasicControls::POCOQuickOverlayClicked, this, [this] {
++        QAction *action = findChild<QAction *>(QStringLiteral("pocoAddOverlayAction"));
++        if (action)
++            action->trigger();
++        else
++            QMessageBox::warning(this, QStringLiteral("Sobreposição indisponível"),
++                                 QStringLiteral("O assistente de overlay não carregou."));
++    });
++    connect(controls, &OBSBasicControls::POCOQuickMoreSourcesClicked, this, [this] {
++        QAction *action = findChild<QAction *>(QStringLiteral("actionAddSource"));
++        if (action)
++            action->trigger();
++        else
++            QMessageBox::warning(this, QStringLiteral("Fonte indisponível"),
++                                 QStringLiteral("A seleção de fontes não está acessível."));
++    });
++    connect(controls, &OBSBasicControls::POCOQuickPluginsClicked, this, [this] {
++        // The built-in manager knows which plugins actually loaded. Opening
++        // it does not imply arbitrary PC .dll/.so files work on Android.
++        QAction *action = ui->actionOpenPluginManager;
++        if (action && action->isEnabled())
++            action->trigger();
++        else
++            QMessageBox::warning(this, QStringLiteral("Gerenciador indisponível"),
++                                 QStringLiteral("O gerenciador de plugins não está disponível."));
++    });
++    connect(controls, &OBSBasicControls::POCOQuickPerformanceClicked, this, [this] {
++        QAction *diagnostic = findChild<QAction *>(QStringLiteral("pocoThreePathsReportAction"));
++        if (diagnostic)
++            diagnostic->trigger();
++        else
++            QMessageBox::warning(this, QStringLiteral("Diagnóstico indisponível"),
++                                 QStringLiteral("O painel dos três caminhos não foi carregado."));
++    });
++#endif
++
+ 	connect(controls, &OBSBasicControls::StreamButtonClicked, this, &OBSBasic::StreamActionTriggered);
+ 
+ 	connect(controls, &OBSBasicControls::StartStreamMenuActionClicked, this, &OBSBasic::StartStreaming);
+@@ -1132,6 +1211,7 @@ void OBSBasic::OBSInit()
+     // CEF browser type to Android WebView (no CEF, no extra process).
+     QAction *pocoAddOverlay = ui->menuTools->addAction(
+         QStringLiteral("OBS PC / LIVE Studio: adicionar overlay por link"));
++    pocoAddOverlay->setObjectName(QStringLiteral("pocoAddOverlayAction"));
+     connect(pocoAddOverlay, &QAction::triggered, this, [this] {
+         if (!GetCurrentScene()) {
+             QMessageBox::warning(this, QStringLiteral("Nenhuma cena selecionada"),
+@@ -1177,6 +1257,7 @@ void OBSBasic::OBSInit()
+     // and report the actual encoder attached to the running stream.
+     QAction *pocoCodecReport = ui->menuTools->addAction(
+         QStringLiteral("POCO: verificar chip, GPU/codec e codificador em uso"));
++    pocoCodecReport->setObjectName(QStringLiteral("pocoThreePathsReportAction"));
+     connect(pocoCodecReport, &QAction::triggered, this, [this] {
+         struct obs_video_info video{};
+         obs_get_video_info(&video);
+@@ -1200,7 +1281,32 @@ void OBSBasic::OBSInit()
+         const QString rendererName = renderer ? QString::fromUtf8(renderer)
+                                                : QStringLiteral("(desconhecido)");
+         obs_leave_graphics();
+-        diagnostic += QStringLiteral("\nRenderizador gráfico real: ") + rendererName;
++        // The graphics path and the encoder are *not* alternatives:
++        // GLES renders every scene, then either MediaCodec or x264 encodes it.
++        const bool softwareRenderer =
++            rendererName.contains(QStringLiteral("SwiftShader"), Qt::CaseInsensitive) ||
++            rendererName.contains(QStringLiteral("llvmpipe"), Qt::CaseInsensitive) ||
++            rendererName.contains(QStringLiteral("softpipe"), Qt::CaseInsensitive);
++        const bool hardwareAvc = EncoderAvailable("android_mediacodec_h264") &&
++            OBSAndroidAvcAvailable(video.output_width, video.output_height, fpsNum, fpsDen);
++        const bool softwareAvc = EncoderAvailable("obs_x264");
++        diagnostic += QStringLiteral(
++            "\n\nCAMINHO 1 — GPU OpenGL ES (EGL): %1\n"
++            "Renderizador: %2\n"
++            "Vulkan: a GPU pode suportar, mas NÃO é o backend deste APK.\n"
++            "CAMINHO 2 — MediaCodec H.264 hardware: %3\n"
++            "CAMINHO 3 — CPU x264 software: %4")
++            .arg(rendererName == QStringLiteral("(desconhecido)") ? QStringLiteral("não confirmado") :
++                    softwareRenderer ? QStringLiteral("renderizador por software detectado") :
++                                       QStringLiteral("inicializado, confirme o nome da GPU"),
++                 rendererName,
++                 hardwareAvc ? QStringLiteral("compatível com o perfil anunciado") :
++                               QStringLiteral("indisponível para esta resolução/FPS"),
++                 softwareAvc ? QStringLiteral("plugin registrado no OBS") :
++                               QStringLiteral("plugin NÃO registrado"));
++        diagnostic += QStringLiteral(
++            "\nA GPU renderiza; MediaCodec ou x264 codificam. "
++            "O hardware só é comprovado ao iniciar o encoder e gerar quadros.");
+         diagnostic += QStringLiteral("\nPerfil selecionado: %1").arg(
+             QString::fromUtf8(configured ? configured : "(nenhum)"));
+         OBSOutputAutoRelease streaming = obs_frontend_get_streaming_output();
+@@ -1229,6 +1335,12 @@ void OBSBasic::OBSInit()
+         const char *key = advanced ? "Encoder" : "StreamEncoder";
+         const char *current = config_get_string(activeConfiguration, section, key);
+         const bool hardwareSelected = current && (strncmp(current, "android_mediacodec", 18) == 0);
++        if (hardwareSelected && !EncoderAvailable("obs_x264")) {
++            QMessageBox::warning(this, QStringLiteral("x264 indisponível"),
++                                 QStringLiteral("O plugin obs-x264 não carregou. "
++                                                "Não vou gravar uma seleção que não funciona."));
++            return;
++        }
+         if (!hardwareSelected) {
+             uint32_t fpsNum = 0, fpsDen = 0;
+             GetConfigFPS(fpsNum, fpsDen);
+diff --git a/obs-studio/frontend/widgets/OBSBasicControls.cpp b/obs-studio/frontend/widgets/OBSBasicControls.cpp
+index d84502d..bb5800c 100755
+--- a/obs-studio/frontend/widgets/OBSBasicControls.cpp
++++ b/obs-studio/frontend/widgets/OBSBasicControls.cpp
+@@ -130,6 +130,47 @@ OBSBasicControls::OBSBasicControls(OBSBasic *main) : QFrame(nullptr), ui(new Ui:
+ 		flipButton, &QPushButton::clicked, this, [this]() { emit this->FlipCameraButtonClicked(); },
+ 		Qt::DirectConnection);
+ 
++    // POCO quick actions: the standard Android menu bar is hidden, so
++    // essential custom functions must be reachable from the home panel.
++    // Keep these ordinary Qt buttons, not extra floating native windows.
++    auto *pocoScreenButton = new QPushButton(QStringLiteral("Capturar tela"), this);
++    pocoScreenButton->setObjectName(QStringLiteral("pocoQuickScreenButton"));
++    pocoScreenButton->setToolTip(QStringLiteral("Adicionar tela Android à cena; solicita autorização do sistema"));
++    auto *pocoCameraButton = new QPushButton(QStringLiteral("Câmera"), this);
++    pocoCameraButton->setObjectName(QStringLiteral("pocoQuickCameraButton"));
++    pocoCameraButton->setToolTip(QStringLiteral("Adicionar câmera do próprio celular à cena"));
++    auto *pocoOverlayButton = new QPushButton(QStringLiteral("TikFinity / OWN3D"), this);
++    pocoOverlayButton->setObjectName(QStringLiteral("pocoQuickOverlayButton"));
++    pocoOverlayButton->setToolTip(QStringLiteral("Colar link de TikFinity, OWN3D ou VDO.Ninja"));
++    auto *pocoSourcesButton = new QPushButton(QStringLiteral("Mais fontes"), this);
++    pocoSourcesButton->setObjectName(QStringLiteral("pocoQuickSourcesButton"));
++    pocoSourcesButton->setToolTip(QStringLiteral("Abrir a seleção completa de fontes OBS"));
++    ui->buttonsVLayout->insertWidget(2, pocoScreenButton);
++    ui->buttonsVLayout->insertWidget(3, pocoCameraButton);
++    ui->buttonsVLayout->insertWidget(4, pocoOverlayButton);
++    ui->buttonsVLayout->insertWidget(5, pocoSourcesButton);
++    auto *pocoPluginsButton = new QPushButton(QStringLiteral("Plugins"), this);
++    pocoPluginsButton->setObjectName(QStringLiteral("pocoQuickPluginsButton"));
++    pocoPluginsButton->setToolTip(QStringLiteral("Gerenciar plugins do OBS Android ARM64"));
++    ui->buttonsVLayout->insertWidget(6, pocoPluginsButton);
++    auto *pocoPerformanceButton = new QPushButton(QStringLiteral("GPU / HW / CPU"), this);
++    pocoPerformanceButton->setObjectName(QStringLiteral("pocoQuickPerformanceButton"));
++    pocoPerformanceButton->setToolTip(QStringLiteral(
++        "Verificar GPU OpenGL ES, MediaCodec hardware e x264 software"));
++    ui->buttonsVLayout->insertWidget(7, pocoPerformanceButton);
++    connect(pocoScreenButton, &QPushButton::clicked, this,
++            [this] { emit POCOQuickScreenClicked(); });
++    connect(pocoCameraButton, &QPushButton::clicked, this,
++            [this] { emit POCOQuickCameraClicked(); });
++    connect(pocoOverlayButton, &QPushButton::clicked, this,
++            [this] { emit POCOQuickOverlayClicked(); });
++    connect(pocoSourcesButton, &QPushButton::clicked, this,
++            [this] { emit POCOQuickMoreSourcesClicked(); });
++    connect(pocoPluginsButton, &QPushButton::clicked, this,
++            [this] { emit POCOQuickPluginsClicked(); });
++    connect(pocoPerformanceButton, &QPushButton::clicked, this,
++            [this] { emit POCOQuickPerformanceClicked(); });
++
+ 	/* 3-4 16:10 校形。下排三个 dock 的高度是被"控制按钮"这一竖列顶住的 —— 1600x1000 实测下排
+ 	 * 325 px（☰/直播/录制/工作室/设置 五行 + 标题栏），而同一排里混音器空着却占 710 px 宽。
+ 	 * 预览面因此只有 1136x491 = 2.31:1，16:9 的画面在里面左右各黑 150 px。
+@@ -158,8 +199,14 @@ OBSBasicControls::OBSBasicControls(OBSBasic *main) : QFrame(nullptr), ui(new Ui:
+ 		 * 要真减行，得让**静息可见**的按钮自己凑成一对：直播+录制 一行、工作室模式 一行 → 3 行。
+ 		 * 录音中/回放中冒出来的按钮落在后面的行里，一行里只有一个可见就铺满，不影响静息布局。 */
+ 		const QList<QWidget *> preference = {menuButton,
++                             ui->settingsButton,
++                             pocoScreenButton,
++                             pocoCameraButton,
++                             pocoOverlayButton,
++                             pocoSourcesButton,
++                             pocoPluginsButton,
++                             pocoPerformanceButton,
+ 						     flipButton,
+-						     ui->settingsButton,
+ 						     ui->streamButton,
+ 						     ui->recordButton,
+ 						     ui->modeSwitch,
+diff --git a/obs-studio/frontend/widgets/OBSBasicControls.hpp b/obs-studio/frontend/widgets/OBSBasicControls.hpp
+index 78e74cd..b6b2cc8 100755
+--- a/obs-studio/frontend/widgets/OBSBasicControls.hpp
++++ b/obs-studio/frontend/widgets/OBSBasicControls.hpp
+@@ -72,6 +72,12 @@ signals:
+ 	void SettingsButtonClicked();
+ #ifdef __ANDROID__
+ 	void FlipCameraButtonClicked();
++    void POCOQuickScreenClicked();
++    void POCOQuickCameraClicked();
++    void POCOQuickOverlayClicked();
++    void POCOQuickMoreSourcesClicked();
++    void POCOQuickPluginsClicked();
++    void POCOQuickPerformanceClicked();
+ #endif
+ 
+ 	void StartStreamMenuActionClicked();
+diff --git a/obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp b/obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp
+index 354bb0f..375cab9 100755
+--- a/obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp
+@@ -178,6 +178,9 @@ void OBSBasic::AddDropSource(const char *data, DropType image)
+         // source, not the absent CEF-only "browser_source" plugin.
+         type = "android_browser_source";
+         obs_data_set_int(settings, "fps", 30);
++        // A link dropped into a scene is an overlay by default, not a
++        // rectangular opaque webpage. User can disable this in properties.
++        obs_data_set_bool(settings, "transparent", true);
+ #else
+ 		type = "browser_source";
+ #endif
+diff --git a/obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp b/obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp
+index a9d0b78..37fc5fa 100755
+--- a/obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp
+@@ -1293,8 +1293,12 @@ void OBSBasic::LoadData(obs_data_t *data, SceneCollection &collection)
+                 obs_data_set_string(source, "id", "android_browser_source");
+                 obs_data_set_string(source, "versioned_id", "android_browser_source");
+                 OBSDataAutoRelease settings = obs_data_get_obj(source, "settings");
+-                if (settings && !obs_data_has_user_value(settings, "fps"))
+-                    obs_data_set_int(settings, "fps", 30);
++                if (settings) {
++                    if (!obs_data_has_user_value(settings, "fps"))
++                        obs_data_set_int(settings, "fps", 30);
++                    if (!obs_data_has_user_value(settings, "transparent"))
++                        obs_data_set_bool(settings, "transparent", true);
++                }
+                 ++mappedBrowsers;
+             }
+         }
+diff --git a/obs-studio/plugins/android-browser/browser-source.c b/obs-studio/plugins/android-browser/browser-source.c
+index f32b8cf..89cea67 100644
+--- a/obs-studio/plugins/android-browser/browser-source.c
++++ b/obs-studio/plugins/android-browser/browser-source.c
+@@ -345,7 +345,9 @@ static void defaults(obs_data_t *settings)
+ 	obs_data_set_default_int(settings, "width", 1280);
+ 	obs_data_set_default_int(settings, "height", 720);
+ 	obs_data_set_default_int(settings, "fps", 30);
+-	obs_data_set_default_bool(settings, "transparent", false);
++    // Prefer transparent overlays (TikFinity/OWN3D/StreamElements).
++    // Existing explicit user settings remain untouched.
++    obs_data_set_default_bool(settings, "transparent", true);
+ 	obs_data_set_default_int(settings, "alpha_mode", BROWSER_ALPHA_COMPAT);
+ }
+ static bool refresh(obs_properties_t *props, obs_property_t *property, void *data)
+diff --git a/scripts/test-android-network-optimizations.py b/scripts/test-android-network-optimizations.py
+index 7dff2b8..e859e84 100644
+--- a/scripts/test-android-network-optimizations.py
++++ b/scripts/test-android-network-optimizations.py
+@@ -18,6 +18,6 @@ assert 'OBS_ENCODER_CAP_DYN_BITRATE' in med
+ assert 'AMediaCodec_setParameters(e->codec, f)' in med
+ assert 'stream->dbr_enabled = dbr_capable && obs_data_get_bool(settings, OPT_DYN_BITRATE)' in rtmp
+ assert 'web.getSettings().setMediaPlaybackRequiresUserGesture(false)' in web
+-assert 'android:versionCode="31"' in manifest
+-assert 'android:versionName="0.3.4-poco"' in manifest
++assert 'android:versionCode="32"' in manifest
++assert 'android:versionName="0.3.5-poco"' in manifest
+ print("PASS POCO Android 0.3.2 network mitigation and WebView autoplay integration")
+diff --git a/scripts/test-poco-035-alpha-and-quick-actions.py b/scripts/test-poco-035-alpha-and-quick-actions.py
+new file mode 100644
+index 0000000..7b18876
+--- /dev/null
++++ b/scripts/test-poco-035-alpha-and-quick-actions.py
+@@ -0,0 +1,39 @@
++#!/usr/bin/env python3
++"""Static integration guards: Android overlays must retain transparency."""
++from pathlib import Path
++r = Path(__file__).resolve().parents[1]
++p = r/"obs-studio"
++browser = (p/"plugins/android-browser/browser-source.c").read_text()
++web = (p/"frontend/cmake/android/java/com/obsproject/studio/ObsBrowserHost.java").read_text()
++drop = (p/"frontend/widgets/OBSBasic_Dropfiles.cpp").read_text()
++scenes = (p/"frontend/widgets/OBSBasic_SceneCollections.cpp").read_text()
++controls = (p/"frontend/widgets/OBSBasicControls.cpp").read_text()
++signals = (p/"frontend/widgets/OBSBasicControls.hpp").read_text()
++basic = (p/"frontend/widgets/OBSBasic.cpp").read_text()
++manifest = (p/"frontend/cmake/android/AndroidManifest.xml").read_text()
++
++assert 'obs_data_set_default_bool(settings, "transparent", true)' in browser
++assert 'obs_data_set_default_bool(settings, "transparent", false)' not in browser
++assert 's->reader_mode = transparent' in browser
++assert 's->reader_mode ? 0 : gs_android_external_texture_get_id' in browser
++assert 'PixelFormat.RGBA_8888' in web
++assert 'PixelFormat.TRANSLUCENT' in web
++assert 'setBackgroundColor(Color.TRANSPARENT)' in web
++assert 'background:transparent !important' in web
++assert '(document.head||document.documentElement).appendChild(s)' in web
++assert 'background-image:none !important' in web
++assert 'obs_data_set_bool(settings, "transparent", true)' in drop
++assert 'obs_data_set_bool(settings, "transparent", true)' in scenes
++assert 'obs_data_has_user_value(settings, "transparent")' in scenes
++
++for name in ["pocoQuickScreenButton","pocoQuickCameraButton",
++             "pocoQuickOverlayButton","pocoQuickSourcesButton","pocoQuickPluginsButton"]:
++    assert name in controls, name
++for name in ["POCOQuickScreenClicked","POCOQuickCameraClicked",
++             "POCOQuickOverlayClicked","POCOQuickMoreSourcesClicked","POCOQuickPluginsClicked"]:
++    assert name in controls and name in signals and name in basic, name
++assert 'actionOpenPluginManager' in basic
++assert 'versionCode="32"' in manifest
++assert 'versionName="0.3.5-poco"' in manifest
++assert 'android:debuggable="false"' in manifest
++print("PASS: overlay transparency, browser fallback, plugin and source buttons")
+diff --git a/scripts/test-poco-hardware-network.py b/scripts/test-poco-hardware-network.py
+index 1cf5756..f82250e 100644
+--- a/scripts/test-poco-hardware-network.py
++++ b/scripts/test-poco-hardware-network.py
+@@ -8,8 +8,8 @@ codec=(r/"obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCodecC
+ bar=(r/"obs-studio/frontend/widgets/OBSBasicStatusBar.cpp").read_text()
+ main=(r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
+ assert 'android.permission.ACCESS_NETWORK_STATE' in manifest
+-assert 'versionCode="31"' in manifest
+-assert 'versionName="0.3.4-poco"' in manifest
++assert 'versionCode="32"' in manifest
++assert 'versionName="0.3.5-poco"' in manifest
+ assert 'getActiveNetwork()' in java
+ assert 'getLinkUpstreamBandwidthKbps()' in java
+ assert 'NET_CAPABILITY_VALIDATED' in java
+diff --git a/scripts/test-poco-pc-overlay-migration.py b/scripts/test-poco-pc-overlay-migration.py
+index 0692ab0..4adab1a 100644
+--- a/scripts/test-poco-pc-overlay-migration.py
++++ b/scripts/test-poco-pc-overlay-migration.py
+@@ -6,8 +6,8 @@ basic = (r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
+ drop = (r/"obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp").read_text()
+ scenes = (r/"obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp").read_text()
+ manifest = (r/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
+-assert 'versionCode="31"' in manifest
+-assert 'versionName="0.3.4-poco"' in manifest
++assert 'versionCode="32"' in manifest
++assert 'versionName="0.3.5-poco"' in manifest
+ assert 'android:debuggable="false"' in manifest
+ assert 'OBS PC / LIVE Studio: adicionar overlay por link' in basic
+ assert 'QInputDialog::getText(' in basic
+diff --git a/scripts/test-poco-three-video-paths.py b/scripts/test-poco-three-video-paths.py
+new file mode 100644
+index 0000000..c5c3e23
+--- /dev/null
++++ b/scripts/test-poco-three-video-paths.py
+@@ -0,0 +1,36 @@
++#!/usr/bin/env python3
++"""Regression: all three POCO native OBS video paths must remain wired."""
++from pathlib import Path
++r=Path(__file__).resolve().parents[1]
++p=r/"obs-studio"
++cm=(p/"plugins/CMakeLists.txt").read_text()
++gl=(p/"libobs-opengl/gl-android.c").read_text()
++basic=(p/"frontend/widgets/OBSBasic.cpp").read_text()
++controls=(p/"frontend/widgets/OBSBasicControls.cpp").read_text()
++signals=(p/"frontend/widgets/OBSBasicControls.hpp").read_text()
++simple=(p/"frontend/utility/SimpleOutput.cpp").read_text()
++codec=(p/"plugins/android-mediacodec/android-mediacodec.c").read_text()
++java=(p/"frontend/cmake/android/java/com/obsproject/studio/ObsCodecCapabilities.java").read_text()
++assert "add_subdirectory(obs-x264)" in cm
++assert "add_subdirectory(android-mediacodec)" in cm
++assert "eglBindAPI(EGL_OPENGL_ES_API)" in gl
++assert "eglGetDisplay(EGL_DEFAULT_DISPLAY)" in gl
++assert "gladLoadGLES2(get_proc_address)" in gl
++assert 'CAMINHO 1 — GPU OpenGL ES (EGL)' in basic
++assert 'CAMINHO 2 — MediaCodec H.264 hardware' in basic
++assert 'CAMINHO 3 — CPU x264 software' in basic
++assert 'Vulkan: a GPU pode suportar, mas NÃO é o backend deste APK' in basic
++assert 'pocoThreePathsReportAction' in basic
++assert "POCOQuickPerformanceClicked" in signals and "POCOQuickPerformanceClicked" in controls
++assert 'pocoQuickPerformanceButton' in controls
++assert 'EncoderAvailable("obs_x264")' in basic
++assert 'EncoderAvailable("android_mediacodec_h264")' in basic
++assert 'ResetOutputs(); // Force the effective OBS output encoder' in basic
++assert 'SIMPLE_ENCODER_ANDROID_MEDIACODEC' in simple
++assert 'return "obs_x264"' in simple
++assert 'value && *value ? value : "ultrafast"' in simple
++assert 'AMediaCodec_start(e->codec)' in codec
++assert 'hardware=true software=false input=Surface' in codec
++assert 'isHardwareAccelerated()' in java and 'isSoftwareOnly()' in java
++assert 'findEncodersMode("video/avc"' in java
++print("PASS 3 paths: EGL/GLES3 rendering, MediaCodec HW, x264 SW fallback, UI and status guards")
