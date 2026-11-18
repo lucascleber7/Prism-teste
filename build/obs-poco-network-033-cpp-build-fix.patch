@@ -1,0 +1,35 @@
+diff --git a/obs-studio/frontend/widgets/OBSBasicStatusBar.cpp b/obs-studio/frontend/widgets/OBSBasicStatusBar.cpp
+index 35bbfd2..a671881 100755
+--- a/obs-studio/frontend/widgets/OBSBasicStatusBar.cpp
++++ b/obs-studio/frontend/widgets/OBSBasicStatusBar.cpp
+@@ -41,7 +41,7 @@ OBSBasicStatusBar::OBSBasicStatusBar(QWidget *parent)
+ 	statusWidget->ui->recordTime->setDisabled(true);
+ 	statusWidget->ui->delayFrame->hide();
+ 	statusWidget->ui->issuesFrame->hide();
+-\tstatusWidget->ui->kbps->hide();
++	statusWidget->ui->kbps->hide();
+ #ifdef __ANDROID__
+     // One read-only network meter for any vendor: the Android link estimate
+     // is distinct from the true RTMP bitrate already shown by libobs.
+@@ -59,7 +59,7 @@ OBSBasicStatusBar::OBSBasicStatusBar(QWidget *parent)
+     UpdateAndroidNetworkInfo();
+ #endif
+ 
+-\taddPermanentWidget(statusWidget, 1);
++	addPermanentWidget(statusWidget, 1);
+ 	setMinimumHeight(statusWidget->height());
+ 
+ 	UpdateIcons();
+diff --git a/scripts/test-poco-hardware-network.py b/scripts/test-poco-hardware-network.py
+index 0a6c9da..69ed227 100644
+--- a/scripts/test-poco-hardware-network.py
++++ b/scripts/test-poco-hardware-network.py
+@@ -20,6 +20,8 @@ assert 'findEncodersMode("video/hevc"' in codec
+ assert 'isHardwareAccelerated()' in codec
+ assert 'isSoftwareOnly()' in codec
+ assert 'UpdateAndroidNetworkInfo()' in bar
++assert r"\tstatusWidget->ui->kbps->hide();" not in bar
++assert r"\taddPermanentWidget(statusWidget, 1);" not in bar
+ assert 'obs_output_get_total_bytes(output)' in bar
+ assert 'obs_output_get_video_encoder(stream)' in bar
+ assert 'Codec: MediaCodec HW' in bar
