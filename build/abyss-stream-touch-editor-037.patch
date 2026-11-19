@@ -28,9 +28,20 @@ index 0000000..3e60c89
 +5. Testar transparência de links reais TikFinity, OWN3D e VDO.Ninja e guardar logs sem chaves.
 +6. Revisar licença/código correspondente antes de divulgação pública.
 diff --git a/obs-studio/frontend/cmake/android/AndroidManifest.xml b/obs-studio/frontend/cmake/android/AndroidManifest.xml
-index ab39f70..6167acf 100755
+index ab39f70..53389c7 100755
 --- a/obs-studio/frontend/cmake/android/AndroidManifest.xml
 +++ b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+@@ -51,8 +51,8 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     package="com.obsproject.studio"
+     android:installLocation="auto"
+-    android:versionCode="33"
+-    android:versionName="0.3.6-poco">
++    android:versionCode="34"
++    android:versionName="0.3.7-abyss">
+     <uses-permission android:name="android.permission.INTERNET"  />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"  />
 @@ -94,11 +94,11 @@
          android:name="org.qtproject.qt.android.bindings.QtApplication"
          android:hardwareAccelerated="true"
@@ -106,10 +117,10 @@ index 222e403..51df83a 100755
      // Live and recording signals may overlap: retain the disabled preview
 diff --git a/scripts/test-abyss-touch-editor-037.py b/scripts/test-abyss-touch-editor-037.py
 new file mode 100644
-index 0000000..bba384a
+index 0000000..dab71fa
 --- /dev/null
 +++ b/scripts/test-abyss-touch-editor-037.py
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,18 @@
 +#!/usr/bin/env python3
 +from pathlib import Path
 +r=Path(__file__).resolve().parents[1]
@@ -124,5 +135,79 @@ index 0000000..bba384a
 +assert "zoom->setMinimumSize(44, 40)" in s
 +assert 'android:allowBackup="false"' in m
 +assert m.count('android:label="Abyss Stream"')==2
++assert 'android:versionCode="34"' in m
++assert 'android:versionName="0.3.7-abyss"' in m
 +assert "ui->previewFrame->hide()" in p
 +print("PASS: mobile editor controls, dock state, 0.3.6 preview fix, private backup policy")
+diff --git a/scripts/test-android-network-optimizations.py b/scripts/test-android-network-optimizations.py
+index 46b9f86..a8b4eaa 100644
+--- a/scripts/test-android-network-optimizations.py
++++ b/scripts/test-android-network-optimizations.py
+@@ -18,6 +18,6 @@ assert 'OBS_ENCODER_CAP_DYN_BITRATE' in med
+ assert 'AMediaCodec_setParameters(e->codec, f)' in med
+ assert 'stream->dbr_enabled = dbr_capable && obs_data_get_bool(settings, OPT_DYN_BITRATE)' in rtmp
+ assert 'web.getSettings().setMediaPlaybackRequiresUserGesture(false)' in web
+-assert 'android:versionCode="33"' in manifest
+-assert 'android:versionName="0.3.6-poco"' in manifest
++assert 'android:versionCode="34"' in manifest
++assert 'android:versionName="0.3.7-abyss"' in manifest
+ print("PASS POCO Android 0.3.2 network mitigation and WebView autoplay integration")
+diff --git a/scripts/test-poco-035-alpha-and-quick-actions.py b/scripts/test-poco-035-alpha-and-quick-actions.py
+index 6a705d0..16bf392 100644
+--- a/scripts/test-poco-035-alpha-and-quick-actions.py
++++ b/scripts/test-poco-035-alpha-and-quick-actions.py
+@@ -33,7 +33,7 @@ for name in ["POCOQuickScreenClicked","POCOQuickCameraClicked",
+              "POCOQuickOverlayClicked","POCOQuickMoreSourcesClicked","POCOQuickPluginsClicked"]:
+     assert name in controls and name in signals and name in basic, name
+ assert 'actionOpenPluginManager' in basic
+-assert 'versionCode="33"' in manifest
+-assert 'versionName="0.3.6-poco"' in manifest
++assert 'versionCode="34"' in manifest
++assert 'versionName="0.3.7-abyss"' in manifest
+ assert 'android:debuggable="false"' in manifest
+ print("PASS: overlay transparency, browser fallback, plugin and source buttons")
+diff --git a/scripts/test-poco-hardware-network.py b/scripts/test-poco-hardware-network.py
+index 79a4f64..9c2703c 100644
+--- a/scripts/test-poco-hardware-network.py
++++ b/scripts/test-poco-hardware-network.py
+@@ -8,8 +8,8 @@ codec=(r/"obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCodecC
+ bar=(r/"obs-studio/frontend/widgets/OBSBasicStatusBar.cpp").read_text()
+ main=(r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
+ assert 'android.permission.ACCESS_NETWORK_STATE' in manifest
+-assert 'versionCode="33"' in manifest
+-assert 'versionName="0.3.6-poco"' in manifest
++assert 'versionCode="34"' in manifest
++assert 'versionName="0.3.7-abyss"' in manifest
+ assert 'getActiveNetwork()' in java
+ assert 'getLinkUpstreamBandwidthKbps()' in java
+ assert 'NET_CAPABILITY_VALIDATED' in java
+diff --git a/scripts/test-poco-pc-overlay-migration.py b/scripts/test-poco-pc-overlay-migration.py
+index 30e01fa..bb5b120 100644
+--- a/scripts/test-poco-pc-overlay-migration.py
++++ b/scripts/test-poco-pc-overlay-migration.py
+@@ -6,8 +6,8 @@ basic = (r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
+ drop = (r/"obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp").read_text()
+ scenes = (r/"obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp").read_text()
+ manifest = (r/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
+-assert 'versionCode="33"' in manifest
+-assert 'versionName="0.3.6-poco"' in manifest
++assert 'versionCode="34"' in manifest
++assert 'versionName="0.3.7-abyss"' in manifest
+ assert 'android:debuggable="false"' in manifest
+ assert 'OBS PC / LIVE Studio: adicionar overlay por link' in basic
+ assert 'QInputDialog::getText(' in basic
+diff --git a/scripts/test-poco-properties-window-036.py b/scripts/test-poco-properties-window-036.py
+index 82e7f0e..4563f39 100644
+--- a/scripts/test-poco-properties-window-036.py
++++ b/scripts/test-poco-properties-window-036.py
+@@ -4,8 +4,8 @@ from pathlib import Path
+ root=Path(__file__).resolve().parents[1]
+ s=(root/"obs-studio/frontend/dialogs/OBSBasicProperties.cpp").read_text()
+ manifest=(root/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
+-assert 'android:versionCode="33"' in manifest
+-assert 'android:versionName="0.3.6-poco"' in manifest
++assert 'android:versionCode="34"' in manifest
++assert 'android:versionName="0.3.7-abyss"' in manifest
+ assert 'ui->previewFrame->hide()' in s
+ assert 'const bool allowEmbeddedPreview = false;' in s
+ assert 'const bool allowEmbeddedPreview = true;' in s
