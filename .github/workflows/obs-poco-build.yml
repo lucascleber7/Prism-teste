@@ -175,13 +175,30 @@ jobs:
               sudo timeout -k 5s 150s apt-get "${apt_network_options[@]}" install \
                 -y --no-install-recommends --download-only "${host_packages[@]}"
           }
-          if ! fetch_host_packages; then
-            echo "::warning::Ubuntu mirror update or download failed. Retrying with archive.ubuntu.com."
-            sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors\.txt|https://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list.d/ubuntu.sources
-            fetch_host_packages
+          # GitHub runner mirrors can return 503. Avoid a full apt update when
+          # required packages are already installed. Force IPv4 on fallback.
+          missing_packages=()
+          for pkg in "${host_packages[@]}"; do
+            if ! dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2>/dev/null | grep -q '^ii '; then
+              missing_packages+=("$pkg")
+            fi
+          done
+          if (( ${#missing_packages[@]} )); then
+            echo "Missing host packages: ${missing_packages[*]}"
+            sudo sed -i -E \
+              -e 's@https?://security.ubuntu.com/ubuntu@http://archive.ubuntu.com/ubuntu@g' \
+              -e 's@mirror\+file:/etc/apt/apt-mirrors\.txt@http://archive.ubuntu.com/ubuntu@g' \
+              /etc/apt/sources.list.d/ubuntu.sources
+            if ! sudo timeout -k 5s 100s apt-get -o Acquire::ForceIPv4=true \
+                  -o Acquire::Retries=1 -o Acquire::http::Timeout=12 update; then
+              echo "::warning::Ubuntu mirror update failed; using cached package indexes."
+            fi
+            sudo timeout -k 5s 180s apt-get -o Acquire::ForceIPv4=true \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=15 install \
+              -y --no-install-recommends "${missing_packages[@]}"
+          else
+            echo "All required apt host packages already installed; skipping network mirrors."
           fi
-          # 下载完成后再运行 dpkg，避免下载超时中断包安装。
-          sudo apt-get install -y --no-install-recommends --no-download "${host_packages[@]}"
           # 确认解包器真的在（脚本也会自己找一遍；早点失败更好定位）
           for c in 7z 7zz 7za 7zr; do command -v "$c" >/dev/null 2>&1 && { echo "7-Zip: $c"; break; }; done
           # 确认 autoreconf 就位（依赖构建的硬前提）
