@@ -18,33 +18,50 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-      - name: Use runner Android SDK (no setup-android tools re-download)
+      - name: Use runner preinstalled Android SDK
         run: |
           set -euo pipefail
-          echo "ANDROID_HOME=${ANDROID_HOME:-}"
           SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          if [ ! -d "$SDK/platforms/android-35" ]; then
-            echo "::warning::API 35 missing from runner; requesting platform only"
-            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --install 'platforms;android-35' || true
-          fi
-          test -d "$SDK/platforms/android-35"
-          test -x "$SDK/build-tools/35.0.0/aapt" || test -x "$SDK/build-tools/36.0.0/aapt"
-      - name: Build APK (debug/test)
+          test -s "$SDK/platforms/android-35/android.jar"
+          find "$SDK/build-tools" -maxdepth 2 -name aapt2 -type f -print
+      - name: Compile directly with AAPT2, javac and D8 (no Maven/Gradle)
         run: |
           set -euo pipefail
-          gradle -p usb-link :app:assembleDebug --no-daemon --stacktrace
-          test -s usb-link/app/build/outputs/apk/debug/app-debug.apk
-      - name: Inspect APK package and SHA-256
-        run: |
-          set -euo pipefail
-          APK=usb-link/app/build/outputs/apk/debug/app-debug.apk
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          BT="$(find "$SDK/build-tools" -maxdepth 2 -name d8 -type f | sort -V | tail -1)"
+          test -n "$BT"
+          BT="$(dirname "$BT")"
+          ANDROID_JAR="$SDK/platforms/android-35/android.jar"
+          ROOT="$GITHUB_WORKSPACE/usb-link"
+          OUT="$RUNNER_TEMP/abyss-usblink"
+          mkdir -p "$OUT/classes" "$OUT/dex" "$ROOT/app/build/outputs/apk/debug"
+          "$BT/aapt2" compile --dir "$ROOT/app/src/main/res" -o "$OUT/resources.zip"
+          "$BT/aapt2" link -o "$OUT/unsigned.apk" -I "$ANDROID_JAR" \
+            --manifest "$ROOT/app/src/main/AndroidManifest.xml" \
+            --min-sdk-version 26 --target-sdk-version 35 \
+            --version-code 1 --version-name 0.1-test \
+            -R "$OUT/resources.zip"
+          javac -encoding UTF-8 -source 8 -target 8 -cp "$ANDROID_JAR" \
+            -d "$OUT/classes" \
+            "$ROOT/app/src/main/java/com/abyss/usblink/MainActivity.java" \
+            "$ROOT/app/src/main/java/com/abyss/usblink/UsbReceiveService.java" \
+            "$ROOT/app/src/main/java/com/abyss/usblink/CaptureService.java"
+          find "$OUT/classes" -name '*.class' -print0 | \
+            xargs -0 "$BT/d8" --min-api 26 --lib "$ANDROID_JAR" --output "$OUT/dex"
+          cp "$OUT/unsigned.apk" "$OUT/unaligned.apk"
+          (cd "$OUT/dex" && zip -q -j "$OUT/unaligned.apk" classes.dex)
+          "$BT/zipalign" -f 4 "$OUT/unaligned.apk" "$OUT/aligned.apk"
+          keytool -genkeypair -noprompt -keyalg RSA -keysize 2048 \
+            -validity 3650 -alias androiddebugkey -keystore "$OUT/debug.keystore" \
+            -storepass android -keypass android -dname "CN=Abyss USB Link Test, OU=Android"
+          APK="$ROOT/app/build/outputs/apk/debug/app-debug.apk"
+          "$BT/apksigner" sign --ks "$OUT/debug.keystore" \
+            --ks-key-alias androiddebugkey --ks-pass pass:android \
+            --key-pass pass:android --out "$APK" "$OUT/aligned.apk"
+          "$BT/apksigner" verify --verbose --print-certs "$APK"
           sha256sum "$APK"
-          ls -lh "$APK"
-          AAPT="$(find "$ANDROID_HOME/build-tools" -maxdepth 2 -name aapt -type f | sort -V | tail -1)"
-          "$AAPT" dump badging "$APK" | head -n 8
+          "$BT/aapt" dump badging "$APK" | head -n 10
+          test -s "$APK"
       - name: Upload installable Android test APK
         uses: actions/upload-artifact@v4
         with:
