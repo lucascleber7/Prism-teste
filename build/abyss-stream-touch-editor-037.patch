@@ -1,0 +1,128 @@
+diff --git a/ABYSS_STREAM_AUDITORIA_037.md b/ABYSS_STREAM_AUDITORIA_037.md
+new file mode 100644
+index 0000000..3e60c89
+--- /dev/null
++++ b/ABYSS_STREAM_AUDITORIA_037.md
+@@ -0,0 +1,23 @@
++# Abyss Stream: melhorias e auditoria 0.3.7
++
++## Alterações verificáveis no código
++- Botão Ampliar edição no Android, acima da prévia; esconde temporariamente os docks e restaura sua visibilidade ao concluir. Reutiliza a mesma superfície nativa, sem segundo preview EGL.
++- Controles de zoom maiores (44x40 px mínimos) e escala com 40 px mínimos.
++- Interface azul escuro/preto, botão ativo com marrom, sem blur nem efeito contínuo na renderização.
++- Nome do app Android Abyss Stream, mantendo obrigatoriamente os avisos e créditos OBS e de terceiros.
++- Backup automático Android desabilitado. Isto NÃO implementa criptografia das configurações já existentes, nem impede acesso por root ou extração do app em dispositivo comprometido.
++
++## Auditoria com riscos restantes
++- A prévia desktop tem controles pequenos e uma janela de propriedades com histórico de EGL preta. O patch mantém a correção 0.3.6, mas teste físico no POCO ainda é necessário.
++- Fontes de URL TikFinity, OWN3D e VDO.Ninja: precisa testar alfa, áudio e rotação em dispositivo; a análise estática não garante transparência em toda URL.
++- Credenciais de live ainda exigem criptografia autenticada com Android Keystore, com migração segura de dados legados. Não apagar cenas ou informações existentes para implementar isso.
++- Nova identidade não elimina obrigação GPL. Fornecer código fonte correspondente, manter licenças, autores e NOTICES; evitar marca TikTok e ícones/logos OBS na distribuição com identidade própria.
++- Comparação: TikTok LIVE Studio tem cenas, fontes e controles de interação. Inspirar-se em comportamentos públicos; não copiar implementações proprietárias ou afirmar afiliação.
++
++## Testes necessários antes de distribuir APK
++1. Compilar Android arm64 e assinar com a mesma chave de atualização da versão anterior.
++2. No POCO: toque no botão para ampliar edição, mover imagem, ajustar escala, concluir e verificar se os docks reaparecem.
++3. Em vertical e horizontal, conferir que a tela não cresce e não fica preta ao abrir fonte Imagem ou MediaProjection.
++4. Verificar 1080p60 real e quadros perdidos com transmissão; nenhuma melhoria de FPS é presumida.
++5. Testar transparência de links reais TikFinity, OWN3D e VDO.Ninja e guardar logs sem chaves.
++6. Revisar licença/código correspondente antes de divulgação pública.
+diff --git a/obs-studio/frontend/cmake/android/AndroidManifest.xml b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+index ab39f70..6167acf 100755
+--- a/obs-studio/frontend/cmake/android/AndroidManifest.xml
++++ b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+@@ -94,11 +94,11 @@
+         android:name="org.qtproject.qt.android.bindings.QtApplication"
+         android:hardwareAccelerated="true"
+         android:debuggable="false"
+-        android:label="OBS POCO PRO"
++        android:label="Abyss Stream"
+         android:icon="@mipmap/ic_launcher"
+         android:roundIcon="@mipmap/ic_launcher"
+         android:requestLegacyExternalStorage="true"
+-        android:allowBackup="true"
++        android:allowBackup="false"
+         android:fullBackupOnly="false">
+ 
+         <!-- 3-5：推流/录制期间的前台服务。exported=false —— 只由本进程的 native 桥起停。
+@@ -136,7 +136,7 @@
+             android:name="org.qtproject.qt.android.bindings.QtActivity"
+             android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+             android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density"
+-            android:label="OBS POCO PRO"
++            android:label="Abyss Stream"
+         android:icon="@mipmap/ic_launcher"
+         android:roundIcon="@mipmap/ic_launcher"
+             android:launchMode="singleTop"
+diff --git a/obs-studio/frontend/widgets/OBSBasic.cpp b/obs-studio/frontend/widgets/OBSBasic.cpp
+index 222e403..51df83a 100755
+--- a/obs-studio/frontend/widgets/OBSBasic.cpp
++++ b/obs-studio/frontend/widgets/OBSBasic.cpp
+@@ -161,6 +161,45 @@ OBSBasic::OBSBasic(QWidget *parent) : OBSMainWindow(parent), undo_s(ui), ui(new
+ 
+ 	ui->setupUi(this);
+ 	ui->previewDisabledWidget->setVisible(false);
++
++#ifdef __ANDROID__
++    // Touch-only canvas editing: reuse existing native preview surface.
++    // No second EGL surface or modal dialog.
++    QPushButton *touchEditor = new QPushButton(QString::fromUtf8("Ampliar edição"), ui->previewContainer);
++    touchEditor->setObjectName(QStringLiteral("abyssTouchEditor"));
++    touchEditor->setCheckable(true);
++    touchEditor->setMinimumHeight(48);
++    touchEditor->setToolTip(QString::fromUtf8("Amplia a prévia para mover imagens; não altera a live"));
++    touchEditor->setStyleSheet(
++        "QPushButton#abyssTouchEditor {color:#eef7ff; background:rgba(20,43,65,225);"
++        " border:1px solid #6d91ae; border-radius:13px; padding:8px 16px; font-weight:600;}"
++        "QPushButton#abyssTouchEditor:checked {background:rgba(69,48,36,230); border:2px solid #65b7e5;}"
++    );
++    ui->previewTextLayout->insertWidget(0, touchEditor);
++    for (QPushButton *zoom : {ui->previewZoomInButton, ui->previewZoomOutButton}) {
++        zoom->setMinimumSize(44, 40);
++        zoom->setMaximumSize(52, 44);
++        zoom->setIconSize(QSize(18, 18));
++    }
++    ui->previewScalingMode->setMinimumHeight(40);
++    ui->previewScalePercent->setMinimumWidth(56);
++    connect(touchEditor, &QPushButton::toggled, this, [this, touchEditor](bool edit) {
++        // Preserve exact prior dock visibility; leave render and encoder untouched.
++        for (QDockWidget *dock : findChildren<QDockWidget *>(QString(), Qt::FindDirectChildrenOnly)) {
++            if (edit) {
++                dock->setProperty("_abyssEditWasVisible", dock->isVisible());
++                dock->hide();
++            } else if (dock->property("_abyssEditWasVisible").isValid()) {
++                dock->setVisible(dock->property("_abyssEditWasVisible").toBool());
++                dock->setProperty("_abyssEditWasVisible", QVariant());
++            }
++        }
++        touchEditor->setText(edit ? QString::fromUtf8("Concluir edição")
++                                  : QString::fromUtf8("Ampliar edição"));
++        // Reuse the active display, fit preview after layout geometry settles.
++        QTimer::singleShot(0, this, [this] { setPreviewScalingWindow(); });
++    });
++#endif
+ #ifdef __ANDROID__
+     // Unlike the Ubuntu launcher, this uses Qt's native display path.
+     // Live and recording signals may overlap: retain the disabled preview
+diff --git a/scripts/test-abyss-touch-editor-037.py b/scripts/test-abyss-touch-editor-037.py
+new file mode 100644
+index 0000000..bba384a
+--- /dev/null
++++ b/scripts/test-abyss-touch-editor-037.py
+@@ -0,0 +1,16 @@
++#!/usr/bin/env python3
++from pathlib import Path
++r=Path(__file__).resolve().parents[1]
++s=(r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
++m=(r/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
++p=(r/"obs-studio/frontend/dialogs/OBSBasicProperties.cpp").read_text()
++assert "Touch-only canvas editing" in s
++assert "ui->previewTextLayout->insertWidget(0, touchEditor);" in s
++assert 'dock->setProperty("_abyssEditWasVisible", dock->isVisible());' in s
++assert 'dock->setVisible(dock->property("_abyssEditWasVisible").toBool());' in s
++assert "setPreviewScalingWindow();" in s
++assert "zoom->setMinimumSize(44, 40)" in s
++assert 'android:allowBackup="false"' in m
++assert m.count('android:label="Abyss Stream"')==2
++assert "ui->previewFrame->hide()" in p
++print("PASS: mobile editor controls, dock state, 0.3.6 preview fix, private backup policy")
