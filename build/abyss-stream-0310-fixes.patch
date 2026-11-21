@@ -1,0 +1,405 @@
+diff --git a/obs-studio/frontend/cmake/android/AndroidManifest.xml b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+index 08b4c66..b62e343 100755
+--- a/obs-studio/frontend/cmake/android/AndroidManifest.xml
++++ b/obs-studio/frontend/cmake/android/AndroidManifest.xml
+@@ -51,8 +51,8 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     package="com.obsproject.studio"
+     android:installLocation="auto"
+-    android:versionCode="36"
+-    android:versionName="0.3.9-abyss">
++    android:versionCode="37"
++    android:versionName="0.3.10-abyss">
+     <uses-permission android:name="android.permission.INTERNET"  />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"  />
+diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCrashDiag.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCrashDiag.java
+new file mode 100644
+index 0000000..85698a1
+--- /dev/null
++++ b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCrashDiag.java
+@@ -0,0 +1,191 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++package com.obsproject.studio;
++
++import android.app.ActivityManager;
++import android.app.ApplicationExitInfo;
++import android.content.ContentValues;
++import android.content.Context;
++import android.content.SharedPreferences;
++import android.content.pm.PackageInfo;
++import android.net.Uri;
++import android.os.Build;
++import android.os.Environment;
++import android.provider.MediaStore;
++import android.util.Log;
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.nio.charset.StandardCharsets;
++import java.text.SimpleDateFormat;
++import java.util.Date;
++import java.util.List;
++import java.util.Locale;
++
++/**
++ * Leaves a small text file in Downloads when the app dies unexpectedly, so the cause can be read
++ * after the next launch without adb: uncaught Java exceptions are written at the moment they
++ * happen, and the system's record of how the previous process ended (native crash, ANR, memory
++ * kill...) is written at startup. Every entry point swallows its own errors: diagnostics must
++ * never become a new crash.
++ */
++public final class ObsCrashDiag {
++    private static final String TAG = "ObsCrashDiag";
++    private static final String PREFS = "abyss_diag";
++    private static final String KEY_LAST_EXIT = "last_exit_ms";
++    private static final String KEY_FILES = "files_written";
++    private static final int MAX_FILES = 30;
++    private static boolean installed;
++
++    private ObsCrashDiag() {}
++
++    /** Idempotent and cheap after the first call. */
++    public static synchronized void install(Context context) {
++        if (installed || context == null) return;
++        installed = true;
++        try {
++            final Context app = context.getApplicationContext() != null ? context.getApplicationContext() : context;
++            final Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
++            Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
++                @Override
++                public void uncaughtException(Thread thread, Throwable error) {
++                    try {
++                        write(app, "crash-java", "Thread: " + thread.getName() + "\n" + Log.getStackTraceString(error));
++                    } catch (Throwable ignored) {
++                        // Nothing more can be done while the process is already dying.
++                    }
++                    if (previous != null) previous.uncaughtException(thread, error);
++                }
++            });
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
++                Thread worker = new Thread(new Runnable() {
++                    @Override
++                    public void run() {
++                        try {
++                            ExitReader.record(app);
++                        } catch (Throwable t) {
++                            Log.w(TAG, "exit reasons not recorded", t);
++                        }
++                    }
++                }, "abyss-exit-info");
++                worker.setDaemon(true);
++                worker.start();
++            }
++        } catch (Throwable t) {
++            Log.w(TAG, "diagnostics not installed", t);
++        }
++    }
++
++    /** Kept in its own class so devices below API 30 never try to load ApplicationExitInfo. */
++    private static final class ExitReader {
++        static void record(Context app) throws Exception {
++            ActivityManager manager = (ActivityManager) app.getSystemService(Context.ACTIVITY_SERVICE);
++            if (manager == null) return;
++            SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
++            long lastSeen = prefs.getLong(KEY_LAST_EXIT, 0L);
++            long newest = lastSeen;
++            StringBuilder report = new StringBuilder();
++            List<ApplicationExitInfo> exits = manager.getHistoricalProcessExitReasons(null, 0, 8);
++            for (ApplicationExitInfo info : exits) {
++                long when = info.getTimestamp();
++                if (when <= lastSeen) continue;
++                if (when > newest) newest = when;
++                int reason = info.getReason();
++                if (reason == ApplicationExitInfo.REASON_USER_REQUESTED
++                        || reason == ApplicationExitInfo.REASON_USER_STOPPED
++                        || reason == ApplicationExitInfo.REASON_PACKAGE_UPDATED) continue;
++                if (reason == ApplicationExitInfo.REASON_EXIT_SELF && info.getStatus() == 0) continue;
++                report.append(new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date(when)))
++                      .append("  processo=").append(info.getProcessName())
++                      .append("  motivo=").append(reasonName(reason))
++                      .append("  status=").append(info.getStatus())
++                      .append("  importancia=").append(info.getImportance())
++                      .append("  rss_kb=").append(info.getRss())
++                      .append("\n  descricao=").append(info.getDescription()).append('\n');
++                if (reason == ApplicationExitInfo.REASON_ANR) report.append(readTrace(info));
++            }
++            prefs.edit().putLong(KEY_LAST_EXIT, newest).apply();
++            if (report.length() > 0) write(app, "saida-anterior", report.toString());
++        }
++
++        private static String readTrace(ApplicationExitInfo info) {
++            try (InputStream in = info.getTraceInputStream()) {
++                if (in == null) return "";
++                byte[] buffer = new byte[6000];
++                int n = in.read(buffer);
++                return n > 0 ? "  trace_anr:\n" + new String(buffer, 0, n, StandardCharsets.UTF_8) + "\n" : "";
++            } catch (Throwable t) {
++                return "";
++            }
++        }
++
++        private static String reasonName(int reason) {
++            switch (reason) {
++            case ApplicationExitInfo.REASON_ANR: return "ANR (app travado)";
++            case ApplicationExitInfo.REASON_CRASH: return "CRASH Java";
++            case ApplicationExitInfo.REASON_CRASH_NATIVE: return "CRASH NATIVO (SIGSEGV/abort)";
++            case ApplicationExitInfo.REASON_LOW_MEMORY: return "FECHADO POR FALTA DE MEMORIA";
++            case ApplicationExitInfo.REASON_SIGNALED: return "MORTO POR SINAL (sistema/bateria)";
++            case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: return "USO EXCESSIVO DE RECURSOS";
++            case ApplicationExitInfo.REASON_INITIALIZATION_FAILURE: return "FALHA AO INICIAR";
++            case ApplicationExitInfo.REASON_PERMISSION_CHANGE: return "PERMISSAO ALTERADA";
++            case ApplicationExitInfo.REASON_DEPENDENCY_DIED: return "DEPENDENCIA MORREU";
++            case ApplicationExitInfo.REASON_FREEZER: return "CONGELADO PELO SISTEMA";
++            case ApplicationExitInfo.REASON_EXIT_SELF: return "SAIU POR CONTA PROPRIA (status != 0)";
++            case ApplicationExitInfo.REASON_OTHER: return "OUTRO";
++            default: return "DESCONHECIDO(" + reason + ")";
++            }
++        }
++    }
++
++    @SuppressWarnings("deprecation")
++    private static String header(Context app) {
++        String version = "?";
++        try {
++            PackageInfo info = app.getPackageManager().getPackageInfo(app.getPackageName(), 0);
++            version = info.versionName + " (" + info.versionCode + ")";
++        } catch (Throwable ignored) {
++            // Header only; the report is still useful without it.
++        }
++        return "Abyss Stream " + version + "\nAndroid " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")\n"
++            + Build.MANUFACTURER + " " + Build.MODEL;
++    }
++
++    /** Public Downloads through MediaStore (no permission needed); private storage as a fallback. */
++    private static void write(Context app, String tag, String body) {
++        SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
++        int written = prefs.getInt(KEY_FILES, 0);
++        if (written >= MAX_FILES) return;
++        prefs.edit().putInt(KEY_FILES, written + 1).apply();
++        String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
++        String name = "ABYSS_STREAM_diag_" + tag + "_" + stamp + ".txt";
++        byte[] data = (header(app) + "\n\n" + body + "\n").getBytes(StandardCharsets.UTF_8);
++        try {
++            ContentValues values = new ContentValues();
++            values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
++            values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
++            values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
++            Uri uri = app.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
++            if (uri != null) {
++                try (OutputStream out = app.getContentResolver().openOutputStream(uri)) {
++                    if (out != null) {
++                        out.write(data);
++                        return;
++                    }
++                }
++            }
++        } catch (Throwable t) {
++            Log.w(TAG, "MediaStore write failed, using private storage", t);
++        }
++        try {
++            File dir = new File(app.getFilesDir(), "diag");
++            if (dir.isDirectory() || dir.mkdirs()) {
++                try (FileOutputStream out = new FileOutputStream(new File(dir, name))) {
++                    out.write(data);
++                }
++            }
++        } catch (Throwable t) {
++            Log.w(TAG, "private write failed", t);
++        }
++    }
++}
+diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsForegroundService.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsForegroundService.java
+index 49b7262..e199d1a 100755
+--- a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsForegroundService.java
++++ b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsForegroundService.java
+@@ -227,6 +227,25 @@ public final class ObsForegroundService extends Service {
+         });
+     }
+ 
++    /**
++     * startForegroundService() obliges the service to call startForeground() within a few seconds,
++     * otherwise the system kills the whole app, which looks like the app closing by itself. When the
++     * typed promotion failed, promote with the least demanding form so the contract is still met;
++     * the caller stops the service right after.
++     */
++    private void satisfyForegroundContract() {
++        try {
++            final Notification minimal = buildNotification();
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
++                startForeground(NOTIF_ID, minimal, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
++            } else {
++                startForeground(NOTIF_ID, minimal);
++            }
++        } catch (Throwable t) {
++            Log.e(TAG, "minimal startForeground also failed: " + t, t);
++        }
++    }
++
+     @Override
+     public int onStartCommand(Intent it, int flags, int startId) {
+         final String state = (it != null) ? it.getStringExtra(EXTRA_STATE) : null;
+@@ -236,6 +255,7 @@ public final class ObsForegroundService extends Service {
+          * 系统直接 ANR/崩（API 26 引入的硬约束）。 */
+         final boolean promoted = promoteToForeground();
+         if (!promoted) {
++            satisfyForegroundContract();
+             stopSelf(startId);
+         }
+         /* 续体只在"档真的落定"之后跑：ensureProjectionForeground 走的就是这一发。
+diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsNetworkStatus.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsNetworkStatus.java
+index d842e24..9f68fbc 100644
+--- a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsNetworkStatus.java
++++ b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsNetworkStatus.java
+@@ -16,6 +16,8 @@ public final class ObsNetworkStatus {
+     private ObsNetworkStatus() {}
+ 
+     public static String snapshot(Context context) {
++        // Called by the status bar on every launch: the first call installs the crash diagnostics.
++        ObsCrashDiag.install(context);
+         if (context == null) return "indisponível|0|0|0";
+         try {
+             ConnectivityManager manager =
+diff --git a/scripts/test-abyss-0310-fixes.py b/scripts/test-abyss-0310-fixes.py
+new file mode 100644
+index 0000000..2b0df14
+--- /dev/null
++++ b/scripts/test-abyss-0310-fixes.py
+@@ -0,0 +1,35 @@
++#!/usr/bin/env python3
++"""Abyss Stream 0.3.10: crash diagnostics and the foreground-service contract."""
++import re
++from pathlib import Path
++
++r = Path(__file__).resolve().parents[1]
++java = r / "obs-studio/frontend/cmake/android/java/com/obsproject/studio"
++diag = (java / "ObsCrashDiag.java").read_text()
++net = (java / "ObsNetworkStatus.java").read_text()
++service = (java / "ObsForegroundService.java").read_text()
++manifest = (r / "obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
++
++# Diagnostics: installed on every launch, never able to crash the app, still lets the system see the crash.
++assert "public static synchronized void install(Context context)" in diag
++assert "Thread.setDefaultUncaughtExceptionHandler" in diag
++assert "previous.uncaughtException(thread, error)" in diag
++assert "getHistoricalProcessExitReasons" in diag
++assert "private static final class ExitReader" in diag
++assert "Build.VERSION_CODES.R" in diag
++assert "MediaStore.Downloads.EXTERNAL_CONTENT_URI" in diag
++assert "MAX_FILES" in diag
++assert "ObsCrashDiag.install(context);" in net
++assert net.index("ObsCrashDiag.install(context);") < net.index("if (context == null) return")
++
++# startForegroundService() must always be answered with startForeground(), or the system kills the app.
++assert "private void satisfyForegroundContract()" in service
++assert re.search(
++    r"final boolean promoted = promoteToForeground\(\);\s+if \(!promoted\) \{\s+satisfyForegroundContract\(\);\s+stopSelf\(startId\);",
++    service)
++assert "FOREGROUND_SERVICE_TYPE_SPECIAL_USE);\n            } else {\n                startForeground(NOTIF_ID, minimal);" in service
++
++assert 'android:versionCode="37"' in manifest
++assert 'android:versionName="0.3.10-abyss"' in manifest
++
++print("PASS Abyss Stream 0.3.10: crash diagnostics, foreground-service contract")
+diff --git a/scripts/test-abyss-039-fixes.py b/scripts/test-abyss-039-fixes.py
+index 2b6e4db..cfb854e 100644
+--- a/scripts/test-abyss-039-fixes.py
++++ b/scripts/test-abyss-039-fixes.py
+@@ -42,8 +42,8 @@ for name in ("READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO", "READ_MEDIA_AUDIO"):
+ assert re.search(r"TIRAMISU\) \{\s+if \(!isGranted\(ctx, PERM_MEDIA_IMAGES\)\)", perm)
+ 
+ # Version and backup policy.
+-assert 'android:versionCode="36"' in manifest
+-assert 'android:versionName="0.3.9-abyss"' in manifest
++assert 'android:versionCode="37"' in manifest
++assert 'android:versionName="0.3.10-abyss"' in manifest
+ assert 'android:allowBackup="false"' in manifest
+ 
+ # Properties dialog: no dead transition button on Android.
+diff --git a/scripts/test-abyss-touch-editor-037.py b/scripts/test-abyss-touch-editor-037.py
+index a775c29..23c789a 100644
+--- a/scripts/test-abyss-touch-editor-037.py
++++ b/scripts/test-abyss-touch-editor-037.py
+@@ -12,7 +12,7 @@ assert "setPreviewScalingWindow();" in s
+ assert "zoom->setMinimumSize(44, 40)" in s
+ assert 'android:allowBackup="false"' in m
+ assert m.count('android:label="Abyss Stream"')==2
+-assert 'android:versionCode="36"' in m
+-assert 'android:versionName="0.3.9-abyss"' in m
++assert 'android:versionCode="37"' in m
++assert 'android:versionName="0.3.10-abyss"' in m
+ assert "ui->previewFrame->hide()" in p
+ print("PASS: mobile editor controls, dock state, 0.3.6 preview fix, private backup policy")
+diff --git a/scripts/test-android-network-optimizations.py b/scripts/test-android-network-optimizations.py
+index 80c51bb..446dd13 100644
+--- a/scripts/test-android-network-optimizations.py
++++ b/scripts/test-android-network-optimizations.py
+@@ -18,6 +18,6 @@ assert 'OBS_ENCODER_CAP_DYN_BITRATE' in med
+ assert 'AMediaCodec_setParameters(e->codec, f)' in med
+ assert 'stream->dbr_enabled = dbr_capable && obs_data_get_bool(settings, OPT_DYN_BITRATE)' in rtmp
+ assert 'web.getSettings().setMediaPlaybackRequiresUserGesture(false)' in web
+-assert 'android:versionCode="36"' in manifest
+-assert 'android:versionName="0.3.9-abyss"' in manifest
++assert 'android:versionCode="37"' in manifest
++assert 'android:versionName="0.3.10-abyss"' in manifest
+ print("PASS POCO Android 0.3.2 network mitigation and WebView autoplay integration")
+diff --git a/scripts/test-poco-035-alpha-and-quick-actions.py b/scripts/test-poco-035-alpha-and-quick-actions.py
+index ba70402..ace5160 100644
+--- a/scripts/test-poco-035-alpha-and-quick-actions.py
++++ b/scripts/test-poco-035-alpha-and-quick-actions.py
+@@ -33,7 +33,7 @@ for name in ["POCOQuickScreenClicked","POCOQuickCameraClicked",
+              "POCOQuickOverlayClicked","POCOQuickMoreSourcesClicked","POCOQuickPluginsClicked"]:
+     assert name in controls and name in signals and name in basic, name
+ assert 'actionOpenPluginManager' in basic
+-assert 'versionCode="36"' in manifest
+-assert 'versionName="0.3.9-abyss"' in manifest
++assert 'versionCode="37"' in manifest
++assert 'versionName="0.3.10-abyss"' in manifest
+ assert 'android:debuggable="false"' in manifest
+ print("PASS: overlay transparency, browser fallback, plugin and source buttons")
+diff --git a/scripts/test-poco-hardware-network.py b/scripts/test-poco-hardware-network.py
+index 4a08704..08d01c5 100644
+--- a/scripts/test-poco-hardware-network.py
++++ b/scripts/test-poco-hardware-network.py
+@@ -8,8 +8,8 @@ codec=(r/"obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCodecC
+ bar=(r/"obs-studio/frontend/widgets/OBSBasicStatusBar.cpp").read_text()
+ main=(r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
+ assert 'android.permission.ACCESS_NETWORK_STATE' in manifest
+-assert 'versionCode="36"' in manifest
+-assert 'versionName="0.3.9-abyss"' in manifest
++assert 'versionCode="37"' in manifest
++assert 'versionName="0.3.10-abyss"' in manifest
+ assert 'getActiveNetwork()' in java
+ assert 'getLinkUpstreamBandwidthKbps()' in java
+ assert 'NET_CAPABILITY_VALIDATED' in java
+diff --git a/scripts/test-poco-pc-overlay-migration.py b/scripts/test-poco-pc-overlay-migration.py
+index 604b9cf..e5704ea 100644
+--- a/scripts/test-poco-pc-overlay-migration.py
++++ b/scripts/test-poco-pc-overlay-migration.py
+@@ -6,8 +6,8 @@ basic = (r/"obs-studio/frontend/widgets/OBSBasic.cpp").read_text()
+ drop = (r/"obs-studio/frontend/widgets/OBSBasic_Dropfiles.cpp").read_text()
+ scenes = (r/"obs-studio/frontend/widgets/OBSBasic_SceneCollections.cpp").read_text()
+ manifest = (r/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
+-assert 'versionCode="36"' in manifest
+-assert 'versionName="0.3.9-abyss"' in manifest
++assert 'versionCode="37"' in manifest
++assert 'versionName="0.3.10-abyss"' in manifest
+ assert 'android:debuggable="false"' in manifest
+ assert 'OBS PC / LIVE Studio: adicionar overlay por link' in basic
+ assert 'QInputDialog::getText(' in basic
+diff --git a/scripts/test-poco-properties-window-036.py b/scripts/test-poco-properties-window-036.py
+index c1699ad..2506a59 100644
+--- a/scripts/test-poco-properties-window-036.py
++++ b/scripts/test-poco-properties-window-036.py
+@@ -4,8 +4,8 @@ from pathlib import Path
+ root=Path(__file__).resolve().parents[1]
+ s=(root/"obs-studio/frontend/dialogs/OBSBasicProperties.cpp").read_text()
+ manifest=(root/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
+-assert 'android:versionCode="36"' in manifest
+-assert 'android:versionName="0.3.9-abyss"' in manifest
++assert 'android:versionCode="37"' in manifest
++assert 'android:versionName="0.3.10-abyss"' in manifest
+ assert 'ui->previewFrame->hide()' in s
+ assert 'const bool allowEmbeddedPreview = false;' in s
+ assert 'const bool allowEmbeddedPreview = true;' in s

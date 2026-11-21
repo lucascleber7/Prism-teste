@@ -1,0 +1,280 @@
+@ obs-studio/frontend/OBSApp.cpp
+19	打开	Abrir pasta de logs de falhas
+20	无法	Não foi possível criar a gravação na pasta escolhida. Escolha a pasta de novo, conceda a autorização e confirme que há espaço livre.
+21	录像	O nome do arquivo de gravação não pode conter subpastas.
+@ obs-studio/frontend/dialogs/OBSLogViewer.cpp
+1	打开	Abrir arquivo de log
+@ obs-studio/frontend/widgets/OBSBasicControls.cpp
+3	前后	Virar câmera
+@ obs-studio/frontend/widgets/OBSBasic_MainControls.cpp
+1	打开	Abrir pasta de logs
+2	打开	Abrir pasta de configurações
+3	打开	Abrir pasta do perfil
+@ obs-studio/frontend/widgets/OBSBasic_OutputHandler.cpp
+1	无法	Não foi possível acessar a pasta de gravação. Escolha a pasta de novo nas configurações e conceda permissão de escrita,
+2	或输	ou digite /storage/emulated/0/Download/obs. Não escolha pastas restritas do sistema, como Android/data.
+@ obs-studio/frontend/widgets/OBSBasic_Recording.cpp
+1	显示	Mostrar gravação
+2	共享	Para gravar em pasta compartilhada, escolha MP4 ou MOV combinado e desative a divisão de arquivos.
+3	此测	Esta versão de teste ainda não grava saídas personalizadas do FFmpeg direto na pasta de documentos do Android.
+@ obs-studio/frontend/widgets/OBSBasic_ReplayBuffer.cpp
+1	此测	Esta versão de teste ainda não salva o buffer de replay na pasta de documentos compartilhada. Use a gravação normal.
+@ obs-studio/frontend/widgets/OBSAndroidPath.cpp
+4	%1	%1\n\nUse o gerenciador de arquivos do celular para ver este local.%2
+5	\n	\n\nO caminho foi copiado para a área de transferência e pode ser colado em outro app.
+@ obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsForegroundService.java
+14	OB	Abyss Stream em segundo plano
+15	OB	Mantém o app ativo durante a live ou a gravação
+18	OB	Abyss Stream em funcionamento
+19	状态	Estado: 
+20	 	 - continua ativo em segundo plano
+@ obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsAudioHost.java
+9	（i	(id=
+10	, 	, não capturável
+11	未知	Dispositivo desconhecido
+12	内置	Auricular interno
+13	内置	Alto-falante interno
+14	有线	Fones com fio (com microfone)
+15	有线	Fones com fio
+16	模拟	Entrada de linha analógica
+17	数字	Entrada de linha digital
+18	蓝牙	Fones Bluetooth SCO
+19	蓝牙	Bluetooth A2DP
+20	US	Dispositivo USB
+21	US	Acessório USB
+22	底座	Dock
+23	内置	Microfone interno
+24	FM	Sintonizador FM
+25	TV	Sintonizador de TV
+26	电话	Linha telefônica
+27	辅助	Linha auxiliar
+28	IP	Áudio IP
+29	US	Fones USB
+30	助听	Aparelho auditivo
+31	远程	Mixagem remota (dispositivo virtual)
+32	蓝牙	Fones Bluetooth LE
+33	蓝牙	Alto-falante Bluetooth LE
+@ obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsProjectionHost.java
+11	已有	Já existe uma fonte de tela capturando. Reutilize a fonte existente ou desative-a antes de ativar outra.
+12	屏幕	Falha ao iniciar a captura de tela: 
+13	。请	. Desative e ative a fonte de tela de novo e autorize o compartilhamento outra vez.
+14	投影	Falha ao criar ou reconectar a superfície de captura
+@ obs-studio/plugins/android-audio/aaudio-input.c
+3	：这	: todos os valores são NULL neste sistema; o MMAP não pode ser controlado por este plugin
+6	查询	interface de consulta ausente (requer API 36)
+7	是	sim
+8	否	não
+25	，即	, ou seja, erro %s
+39	系统	Entrada padrão do sistema (ponte de áudio inativa: o app hospedeiro não registrou obs_android_set_audio_host)
+40	系统	Entrada padrão do sistema (ponte ativa, mas nenhum item da lista enviada pelo app foi lido: protocolo incompatível)
+41	系统	Entrada padrão do sistema (nenhum dispositivo de entrada de áudio no momento; sem a permissão RECORD_AUDIO a lista pode ficar vazia)
+42	系统	Entrada padrão do sistema (escolhida pelo AAudio)
+@ obs-studio/plugins/android-camera/camera2-input.c
+1	前置	Frontal
+2	后置	Traseira
+3	外接	Externa
+4	朝向	Direção desconhecida
+15	成功	sucesso
+16	参数	parâmetro inválido (bug do lado NDK, não do aparelho)
+17	相机	a câmera foi desconectada
+18	读不	não foi possível ler os metadados
+19	会话	a sessão foi encerrada
+20	当前	operação não permitida no estado atual (a sessão ainda não iniciou?)
+21	流配	configuração de fluxo recusada (tamanho/formato não suportado por este aparelho)
+22	相机	a câmera está em uso por outro app
+23	系统	limite de câmeras em uso simultâneo atingido
+24	相机	câmera desativada por política do dispositivo (política corporativa/controle parental)
+25	没给	permissão CAMERA não concedida
+26	这台	o HAL da câmera deste aparelho não suporta esta chamada
+27	相机	memória insuficiente na câmera (tamanho/buffers muito altos; reduza um nível e tente de novo)
+28	相机	o HAL da câmera relatou um erro fatal
+29	相机	o serviço de câmera relatou um erro fatal
+30	未知	erro desconhecido
+45	NDK	o NDK não enxerga nenhuma câmera (sem autorização ou apenas hardware legacy sem suporte no NDK)
+50	读 	falha ao ler os metadados da AImage ou o número de planos não é 3
+51	裁剪	o retângulo de corte não intersecta o tamanho do quadro
+52	Y 	plano Y insuficiente após o corte
+53	V 	plano V ilegível ou não completo (pixelStride!=1)
+54	色度	plano de croma insuficiente após o corte
+55	交织	plano UV intercalado insuficiente após o corte
+56	色度	pixelStride de croma não é 1 nem 2
+73	没有	sem ACameraManager (este aparelho não tem Camera2 ou a criação falhou)
+74	相机	o id original da câmera '%s' está vazio (o Framework não informou o id); não é possível abrir o dispositivo
+75	未授	permissão CAMERA não concedida; não é possível abrir a câmera
+76	上一	o callback da captura anterior ainda não terminou; não reabrir por enquanto
+77	相机	não foi possível ler as capacidades da câmera '%s'; sem tamanho de captura
+78	相机	a câmera '%s' não informou tamanhos de saída YUV_420_888 utilizáveis
+81	AI	falha em AImageReader_new(%d,%d)
+82	建回	falha ao criar o contexto do callback (memória insuficiente)
+83	AI	falha em AImageReader_setImageListener
+84	拿不	não foi possível obter a ANativeWindow do AImageReader
+85	开相	falha ao abrir a câmera '%s': %s (camera_status=%d)
+86	建输	falha ao criar o contêiner de saída
+87	把窗	falha ao converter a janela em session output
+88	窗口	não foi possível adicionar a janela ao contêiner
+91	建采	falha ao criar a sessão de captura: %s (camera_status=%d, %dx%d + %d-%dfps não é possível nesta combinação%s)
+92	，帧	, a taxa de quadros foi enviada pelos parâmetros da sessão
+93	建 	falha ao criar a requisição TEMPLATE_RECORD
+94	建 	falha ao criar o ACameraOutputTarget
+95	把窗	falha ao adicionar a janela à requisição
+97	发起	falha ao iniciar a captura contínua: %s (camera_status=%d)
+98	不下	não enviar (padrão do aparelho)
+99	%d	%d-%d (%s)
+100	会话	parâmetros da sessão + requisição repetida
+101	只重	somente requisição repetida
+104	打开	retorno após falha ao abrir
+105	面已	superfície removida
+106	应用	o app foi para segundo plano e devolveu a câmera (reabre ao voltar)
+109	失联	sem sinal
+110	%u	%u ms sem quadros; sessão derrubada e reaberta por perda de sinal
+112	(没	(motivo não registrado)
+120	(未	(não especificado)
+122	(没	(motivo não registrado)
+127	(没	(motivo não registrado)
+128	本来	já concedida (o aviso não aparecerá)
+129	已发	solicitado; o aviso do sistema apareceu - depois de escolher, reabra esta janela para atualizar
+130	发起	falha ao solicitar: sem Activity ou negada permanentemente pelo sistema (abra em Configurações > Apps > Permissões)
+133	（相	(ponte de permissão da câmera inativa: o app hospedeiro não registrou obs_android_set_camera_host)
+134	未授	Permissão CAMERA não concedida. Você também pode tocar no botão abaixo para pedir de novo;
+135	若首	se na primeira abertura você escolheu [Não perguntar novamente], só dá para ativar em [Configurações > Apps > Abyss Stream > Permissões].
+136	申请	Pedir permissão da câmera
+137	（拿	(não foi possível obter a lista de câmeras)
+138	（N	(nenhuma câmera disponível no NDK: sem autorização ou apenas hardware legacy sem suporte)
+139	%s	%s '%s' (rotação %d°)
+140	（自	(automático: escolhe a primeira conforme a preferência de direção abaixo)
+141	不挑	Qualquer
+142	后置	Traseira
+143	前置	Frontal
+144	不旋	Sem rotação (padrão)
+145	顺时	90° horário
+146	旋转	180°
+147	顺时	270° horário
+148	（自	(automático: o maior nível até %d×%d)
+149	%s	%s (%.1f MP)
+150	（自	(automático: este aparelho não informa a tabela de tamanhos)
+151	（自	(automático: o maior limite de FPS da tabela)
+152	%s	%s fps (fixo)
+153	%s	%s fps (o AE reduz dentro desta faixa)
+154	（自	(automático: sem tabela de FPS do AE; usa o padrão do aparelho)
+155	自动	Automático (Rec. 709)
+156	默认	FPS padrão
+158	 	 - esta linha é um instantâneo de quando a janela abriu e só atualiza uma vez, quando chega o primeiro quadro.
+159	没在	Não está capturando. Último motivo de falha: %s
+160	没在	Não está capturando (fonte não ativada). Quadros enviados: %llu; descartados: %llu
+@ obs-studio/plugins/android-camera/camera2-input.c
+157	正在	Capturando: %dx%d %s (valores pedidos ao aparelho, que pode arredondar); %llu quadros enviados; %llu descartados
+@ obs-studio/plugins/android-capture/uvc-input.c
+11	超出	fora do intervalo contínuo; valor ajustado
+25	成功	sucesso
+26	跳过	ignorado
+31	 	 - quadro totalmente preto: a placa de captura está enviando preto; verifique a fonte HDMI e a placa
+32	 	 - com conteúdo
+35	（帧	(início do quadro FFD8 ✓)
+36	（帧	(início do quadro diferente de FFD8 ✗)
+44	采集	Capturando: %s %ux%u @ %.2f fps
+46	未选	Nenhum dispositivo selecionado (escolha uma câmera ou placa de captura USB nas propriedades)
+47	USB	Ponte USB inativa (o app hospedeiro não registrou obs_android_set_usb_host)
+49	设备	O dispositivo '%s' não está na lista USB (foi desconectado?)
+51	设备	Dispositivo '%s' sem autorização
+56	打开	Falha ao abrir o dispositivo (fd=%d) - ele foi desconectado ou a autorização acabou de ser retirada
+57	正在	Iniciando a sessão USB/UVC…
+63	Hi	HighSpeed 480Mbps - não é SuperSpeed; a largura de banda tende a ser insuficiente
+64	未知	desconhecido
+65	设备	O dispositivo não é um UVC compatível (sem interface de fluxo bulk)
+66	设备	O dispositivo não suporta o formato YUV, o tamanho ou o FPS escolhido; revise os parâmetros. Desativar o modo de baixa latência restaura a negociação compatível
+67	设备	O dispositivo não informou nenhum modo disponível
+68	当前	O link USB atual não atingiu SuperSpeed e não comporta o YUV sem compressão escolhido; verifique o cabo ou adaptador
+75	占用	Falha ao reivindicar a interface USB (%d) - o driver uvcvideo do kernel pode estar usando o dispositivo
+78	UV	Falha na negociação UVC (%d)
+79	设备	O tamanho de quadro do dispositivo excede o buffer suportado
+81	内存	Memória insuficiente: falha ao alocar o buffer
+84	USB	Falha ao iniciar a thread de recepção USB (%d)
+85	采集	Capturando: %s %ux%u
+87	USB	Erro de recepção USB (%d); aguardando reconexão…
+90	USB	Recepção USB interrompida (%d)
+91	USB	Bloco de dados USB maior que o buffer de análise
+94	边界	Limite de recusas de fronteira atingido; o EOF deve ter sido perdido
+97	（M	(MJPEG deve começar com FF D8)
+100	帧尾	Fim do quadro sem FFD9
+101	帧首	Início do quadro diferente de FFD8
+102	连续	Limite de quadros ruins consecutivos atingido
+104	连续	Limite de quadros ruins consecutivos atingido
+115	采集	Capturando: %s %ux%u @ %.2f fps
+120	设备	Dispositivo sem resposta (%u ciclos seguidos sem quadros); reconectando automaticamente…
+133	失败	falha
+134	（U	(ponte USB inativa: o app hospedeiro não registrou obs_android_set_usb_host)
+136	（当	(nenhuma câmera ou placa de captura USB no momento; conecte e reabra estas propriedades)
+137	（未	(sem autorização)
+138	（不	(não usar câmera ou placa de captura USB)
+140	仅对	Vale apenas para YUYV/NV12: mantém o formato, o tamanho e o FPS escolhidos, sem trocar para MJPEG nem reduzir a resolução. Desativar restaura a negociação compatível.
+141	仅对	Vale apenas para captura YUV direta. Vem desativado para suavizar a oscilação de relógio entre captura e saída; ativado, descarta quadros intermediários da fila e pode aumentar quadros repetidos e travadas.
+142	空闲	Ocioso (fonte inativa ou captura ainda não iniciada). Quadros enviados: %llu
+@ obs-studio/plugins/android-screen/screen-capture.c
+2	读 	falha ao ler os metadados da AImage ou o número de planos não é 1
+3	RG	pixelStride do plano RGBA não é 4
+4	裁剪	retângulo de corte inválido
+5	按裁	plano insuficiente após o corte
+7	透明	quadro transparente grande demais
+8	ac	acquireLatestImage não retornou quadro
+17	系统	Áudio do sistema: %s; %ld fontes solicitando; %llu quadros enviados ≈ %.2f s; pico da sessão %d/32767%s.
+18	泵在	bomba ativa
+19	未起	não iniciada
+20	（峰	 (pico sempre 0 = o sistema não enviou nenhum som)
+24	上一	o callback da captura anterior ainda não terminou; não reabrir por enquanto
+25	问不	não foi possível obter o tamanho da tela (ponte inativa ou o lado Java não leu o modo de exibição)
+27	AI	falha em AImageReader_new(%u,%u,RGBA_8888,%d): media_status=%d
+28	建回	falha ao criar o contexto do callback (memória insuficiente)
+29	上下	contexto não criado
+30	AI	falha em AImageReader_setImageListener
+31	监听	listener não registrado
+32	拿不	não foi possível obter a ANativeWindow do AImageReader
+33	窗口	janela indisponível
+34	建投	falha ao criar a superfície de captura (%ux%u): %s
+35	未收	motivo não informado; veja o log OBS-screen e autorize o compartilhamento de novo
+36	投影	superfície de captura não criada
+38	屏幕	ponte de tela inativa (o frontend não registrou ou registrou depois de criar a fonte)
+39	起同	falha ao abrir a tela de consentimento (%d) - sem Context ou a Activity não iniciou; veja o estado do lado Java na linha anterior
+41	令牌	a permissão de captura não existe mais (o usuário parou o compartilhamento ou o sistema a retirou)
+45	源销	fonte destruída
+48	源停	fonte desativada
+49	GP	configuração de captura por GPU alterada
+50	GP	Falha na captura por GPU ou tempo esgotado no primeiro quadro; nova tentativa em %u s, sem trocar para CPU. Se a autorização expirou, reabra a fonte e autorize de novo.
+51	GP	falha na captura por GPU; aguardando nova tentativa
+54	注意	Atenção: isto só vale para o primeiro quadro: com a tela parada, ficar alguns segundos sem quadros é normal (veja o item 2 do cabeçalho do arquivo)
+56	保留	Preserva o alfa entregue pelo sistema; não recupera um fundo já composto. O modo pré-multiplicado serve para entradas cujas cores já foram multiplicadas pelo alfa.
+57	保留	Preserva a transparência dos quadros capturados; se o fundo já foi composto pelo sistema, continua opaco.
+58	实验	Captura por GPU (experimental): %ux%u, %s, %llu quadros importados.
+59	已收	quadros recebidos
+60	等待	aguardando o primeiro quadro
+61	正在	Captura manual por CPU: %ux%u.
+62	正在	Captura por CPU: %ux%u; %llu quadros enviados; %llu descartados.
+63	没在	Não está capturando. Último motivo de falha: %s
+64	没在	Não está capturando (fonte não ativada ou ainda sem permissão de captura).
+65	总线	Ponte inativa: sem permissão de captura e a fonte não foi criada
+@ obs-studio/plugins/nikon-source/nikon-source.c
+12	未选	Nenhum dispositivo selecionado (escolha uma câmera Nikon nas propriedades)
+13	USB	Ponte USB inativa (o app hospedeiro não registrou obs_android_set_usb_host)
+14	设备	O dispositivo '%s' não está na lista USB (foi desconectado?)
+15	设备	Dispositivo '%s' sem autorização
+20	打开	Falha ao abrir o dispositivo (fd=%d) - ele foi desconectado ou a autorização acabou de ser retirada
+21	正在	Iniciando a sessão USB/PTP…
+40	读 	Falha ao ler as condições de permissão do LiveView (resp=0x%04X)
+43	相机	A câmera bloqueou o Live View (bits de condição 0x%08X: verifique bateria, temperatura, lente e se está fotografando)
+45	设置	Falha ao definir a resolução do LiveView (resp=0x%04X)
+47	设置	Falha ao definir a qualidade JPEG (resp=0x%04X)
+49	查询	Falha ao consultar o limite de buffer do LiveView (resp=0x%04X)
+53	正在	Iniciando o Live View…
+54	St	Falha em StartLiveView
+66	采集	Capturando: %dx%d; %llu quadros enviados
+73	Ni	Nikon Webcam (série Z)
+79	失败	falha (sem Activity ou negada permanentemente)
+80	Ni	Câmera Nikon (USB)
+81	（U	(ponte USB inativa: o app hospedeiro não registrou obs_android_set_usb_host)
+82	（当	(nenhum dispositivo USB no momento; conecte a câmera (modo MTP) e reabra estas propriedades)
+83	（未	(sem autorização)
+84	（不	(não usar)
+85	申请	Pedir autorização USB
+86	Li	Resolução do Live View
+87	XG	XGA 1024×768 (padrão, máximo)
+88	JP	Qualidade JPEG (0 = menor banda ~ 5 = melhor imagem)
+89	空闲	Ocioso (fonte inativa ou captura ainda não iniciada). Quadros enviados: %llu
