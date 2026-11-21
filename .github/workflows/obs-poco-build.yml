@@ -134,6 +134,11 @@ jobs:
           git apply --check "$RUNNER_TEMP/abyss-stream-0310-fixes.patch"
           git apply "$RUNNER_TEMP/abyss-stream-0310-fixes.patch"
           curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/abyss-stream-0310b-observability.patch \
+            -o "$RUNNER_TEMP/abyss-stream-0310b-observability.patch"
+          git apply --check "$RUNNER_TEMP/abyss-stream-0310b-observability.patch"
+          git apply "$RUNNER_TEMP/abyss-stream-0310b-observability.patch"
+          curl --fail --location --retry 3 \
             https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/abyss-i18n-ptbr.py \
             -o "$RUNNER_TEMP/abyss-i18n-ptbr.py"
           curl --fail --location --retry 3 \
@@ -161,6 +166,7 @@ jobs:
           python3 scripts/test-abyss-touch-editor-037.py
           python3 scripts/test-abyss-039-fixes.py
           python3 scripts/test-abyss-0310-fixes.py
+          python3 scripts/test-abyss-0310b-observability.py
           python3 scripts/test-poco-three-video-paths.py
           python3 obs-studio/plugins/obs-outputs/tests/rtmp-dbr-test.py
 

@@ -1,0 +1,328 @@
+diff --git a/obs-studio/frontend/OBSApp.cpp b/obs-studio/frontend/OBSApp.cpp
+index e4fd048..0eead83 100755
+--- a/obs-studio/frontend/OBSApp.cpp
++++ b/obs-studio/frontend/OBSApp.cpp
+@@ -2072,6 +2072,7 @@ static void androidSyncPreviewVisibility()
+ 	const QWidget *ownerWindow = surfaceOwner ? surfaceOwner->window() : nullptr;
+ 	const QWidget *modal = qApp->activeModalWidget();
+ 	bool covered = (modal && modal != ownerWindow) || qApp->activePopupWidget();
++	const QWidget *coverer = nullptr;
+ 
+ 	/* 只认"模态/弹出"不够：添加源那个窗口（`OBSBasic_SceneItems.cpp:831` 走的是 `show()` 不是
+ 	 * `exec()`，非模态）2026-09-05 20:09 实测弹出来时一句 藏面 都没有，预览面照样压在它右半边，
+@@ -2107,10 +2108,26 @@ static void androidSyncPreviewVisibility()
+ 				break;
+ 			}
+ 			covered = true;
++			coverer = w;
+ 			break;
+ 		}
+ 	}
+ 
++	/* Log only when the state changes, and say which window is responsible: a preview that stays
++	 * black after a dialog closes is otherwise impossible to attribute from the log. */
++	static bool lastCovered = false;
++	if (covered != lastCovered) {
++		lastCovered = covered;
++		const QWidget *who = coverer;
++		if (!who && modal && modal != ownerWindow)
++			who = modal;
++		if (!who)
++			who = qApp->activePopupWidget();
++		blog(LOG_INFO, "[POCO-preview] previa %s; janela que cobre: %s '%s'", covered ? "ESCONDIDA" : "visivel",
++		     who ? who->metaObject()->className() : "-",
++		     who ? who->windowTitle().toUtf8().constData() : "");
++	}
++
+ 	obsAndroidDisplaySetVisible(!covered);
+ }
+ 
+diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCrashDiag.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCrashDiag.java
+index 85698a1..a7ed9ff 100644
+--- a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCrashDiag.java
++++ b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsCrashDiag.java
+@@ -3,21 +3,32 @@ package com.obsproject.studio;
+ 
+ import android.app.ActivityManager;
+ import android.app.ApplicationExitInfo;
++import android.content.ContentResolver;
++import android.content.ContentUris;
+ import android.content.ContentValues;
+ import android.content.Context;
++import android.content.Intent;
++import android.content.IntentFilter;
+ import android.content.SharedPreferences;
+ import android.content.pm.PackageInfo;
++import android.database.Cursor;
+ import android.net.Uri;
++import android.os.BatteryManager;
+ import android.os.Build;
++import android.os.Debug;
+ import android.os.Environment;
++import android.os.PowerManager;
+ import android.provider.MediaStore;
+ import android.util.Log;
+ import java.io.File;
+ import java.io.FileOutputStream;
+ import java.io.InputStream;
+ import java.io.OutputStream;
++import java.io.RandomAccessFile;
+ import java.nio.charset.StandardCharsets;
+ import java.text.SimpleDateFormat;
++import java.util.ArrayDeque;
++import java.util.Arrays;
+ import java.util.Date;
+ import java.util.List;
+ import java.util.Locale;
+@@ -35,6 +46,12 @@ public final class ObsCrashDiag {
+     private static final String KEY_LAST_EXIT = "last_exit_ms";
+     private static final String KEY_FILES = "files_written";
+     private static final int MAX_FILES = 30;
++    private static final long MONITOR_INTERVAL_MS = 15000L;
++    private static final int PERF_KEEP = 240;
++    private static final int MAX_LOG_BYTES = 1500000;
++    private static final ArrayDeque<String> perfLines = new ArrayDeque<>();
++    private static File logDir;
++    private static long nextLogDirSearchMs;
+     private static boolean installed;
+ 
+     private ObsCrashDiag() {}
+@@ -71,6 +88,7 @@ public final class ObsCrashDiag {
+                 worker.setDaemon(true);
+                 worker.start();
+             }
++            startMonitor(app);
+         } catch (Throwable t) {
+             Log.w(TAG, "diagnostics not installed", t);
+         }
+@@ -188,4 +206,189 @@ public final class ObsCrashDiag {
+             Log.w(TAG, "private write failed", t);
+         }
+     }
++
++    /**
++     * Every 15 s: sample thermal state, battery, memory. Every minute: write the samples and a copy of
++     * the OBS log to Downloads, so a slow or black live can be explained afterwards even if the app
++     * was killed. The logs are the app's own; no stream key is written by OBS to them.
++     */
++    private static void startMonitor(final Context app) {
++        Thread monitor = new Thread(new Runnable() {
++            @Override
++            public void run() {
++                int tick = 0;
++                try {
++                    mirrorLogs(app);
++                } catch (Throwable ignored) {
++                    // First copy is best effort.
++                }
++                while (true) {
++                    try {
++                        Thread.sleep(MONITOR_INTERVAL_MS);
++                        samplePerf(app);
++                        if (++tick % 4 == 0) {
++                            flushPerf(app);
++                            mirrorLogs(app);
++                        }
++                    } catch (InterruptedException e) {
++                        return;
++                    } catch (Throwable t) {
++                        Log.w(TAG, "monitor tick failed", t);
++                    }
++                }
++            }
++        }, "abyss-monitor");
++        monitor.setDaemon(true);
++        monitor.start();
++    }
++
++    private static String thermalName(int status) {
++        switch (status) {
++        case 0: return "normal";
++        case 1: return "LEVE";
++        case 2: return "MODERADO";
++        case 3: return "SEVERO";
++        case 4: return "CRITICO";
++        case 5: return "EMERGENCIA";
++        case 6: return "DESLIGANDO";
++        default: return "?";
++        }
++    }
++
++    private static void samplePerf(Context app) {
++        StringBuilder sb = new StringBuilder(new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()));
++        PowerManager power = (PowerManager) app.getSystemService(Context.POWER_SERVICE);
++        if (power != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
++            sb.append("  termico=").append(thermalName(power.getCurrentThermalStatus()));
++        Intent battery = app.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
++        if (battery != null) {
++            sb.append("  bateria=").append(battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)).append('%')
++              .append("  temp=").append(battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0).append("C")
++              .append("  carregando=").append(battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0);
++        }
++        android.app.ActivityManager manager = (android.app.ActivityManager) app.getSystemService(Context.ACTIVITY_SERVICE);
++        if (manager != null) {
++            android.app.ActivityManager.MemoryInfo memory = new android.app.ActivityManager.MemoryInfo();
++            manager.getMemoryInfo(memory);
++            sb.append("  ram_livre_mb=").append(memory.availMem / 1048576L)
++              .append("  memoria_baixa=").append(memory.lowMemory);
++        }
++        sb.append("  app_pss_mb=").append(Debug.getPss() / 1024L);
++        synchronized (perfLines) {
++            perfLines.addLast(sb.toString());
++            while (perfLines.size() > PERF_KEEP) perfLines.removeFirst();
++        }
++    }
++
++    private static void flushPerf(Context app) {
++        StringBuilder sb = new StringBuilder(header(app)).append("\n\nAmostras a cada 15 s (mais recentes no fim):\n");
++        synchronized (perfLines) {
++            for (String line : perfLines) sb.append(line).append('\n');
++        }
++        writeDownload(app, "ABYSS_STREAM_desempenho.txt", sb.toString().getBytes(StandardCharsets.UTF_8), true);
++    }
++
++    private static File findLogDirIn(File dir, int depth) {
++        if (dir == null || depth > 6) return null;
++        File[] kids = dir.listFiles();
++        if (kids == null) return null;
++        for (File kid : kids) {
++            if (kid.isDirectory() && "logs".equals(kid.getName()) && "obs-studio".equals(dir.getName())) return kid;
++        }
++        for (File kid : kids) {
++            String name = kid.getName();
++            if (!kid.isDirectory() || "cache".equals(name) || "code_cache".equals(name) || "lib".equals(name)) continue;
++            File found = findLogDirIn(kid, depth + 1);
++            if (found != null) return found;
++        }
++        return null;
++    }
++
++    private static File locateLogDir(Context app) {
++        if (logDir != null && logDir.isDirectory()) return logDir;
++        long now = System.currentTimeMillis();
++        if (now < nextLogDirSearchMs) return null;
++        nextLogDirSearchMs = now + 60000L;
++        File found = findLogDirIn(app.getFilesDir(), 0);
++        if (found == null) found = findLogDirIn(app.getDataDir(), 0);
++        logDir = found;
++        return found;
++    }
++
++    private static byte[] readTail(File file, int max) {
++        try (RandomAccessFile in = new RandomAccessFile(file, "r")) {
++            long length = in.length();
++            long start = Math.max(0L, length - max);
++            in.seek(start);
++            byte[] data = new byte[(int) (length - start)];
++            in.readFully(data);
++            if (start == 0L) return data;
++            byte[] marker = "[... inicio do log omitido ...]\n".getBytes(StandardCharsets.UTF_8);
++            byte[] joined = new byte[marker.length + data.length];
++            System.arraycopy(marker, 0, joined, 0, marker.length);
++            System.arraycopy(data, 0, joined, marker.length, data.length);
++            return joined;
++        } catch (Throwable t) {
++            return null;
++        }
++    }
++
++    /** Copies the three most recent OBS logs to Downloads (the previous session's log is the interesting one). */
++    private static void mirrorLogs(Context app) {
++        File dir = locateLogDir(app);
++        if (dir == null) return;
++        File[] files = dir.listFiles();
++        if (files == null || files.length == 0) return;
++        Arrays.sort(files, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
++        SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
++        for (int i = 0; i < Math.min(3, files.length); i++) {
++            File file = files[i];
++            if (!file.isFile()) continue;
++            String key = "log_" + file.getName();
++            long length = file.length();
++            if (prefs.getLong(key, -1L) == length) continue;
++            byte[] data = readTail(file, MAX_LOG_BYTES);
++            if (data == null) continue;
++            String name = "ABYSS_STREAM_log_" + file.getName().replaceAll("[^A-Za-z0-9_.-]", "_");
++            if (!name.endsWith(".txt")) name += ".txt";
++            if (writeDownload(app, name, data, true)) prefs.edit().putLong(key, length).apply();
++        }
++    }
++
++    private static Uri findDownload(ContentResolver resolver, String name) {
++        String[] projection = { MediaStore.MediaColumns._ID };
++        String selection = MediaStore.MediaColumns.DISPLAY_NAME + "=? AND " + MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?";
++        String[] args = { name, Environment.DIRECTORY_DOWNLOADS + "%" };
++        try (Cursor cursor = resolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, projection, selection, args, null)) {
++            if (cursor != null && cursor.moveToFirst())
++                return ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cursor.getLong(0));
++        } catch (Throwable ignored) {
++            // Fall through: a new file is created instead.
++        }
++        return null;
++    }
++
++    /** Writes (or, with overwrite, replaces) a file in public Downloads through MediaStore. */
++    private static boolean writeDownload(Context app, String name, byte[] data, boolean overwrite) {
++        try {
++            ContentResolver resolver = app.getContentResolver();
++            Uri uri = overwrite ? findDownload(resolver, name) : null;
++            if (uri == null) {
++                ContentValues values = new ContentValues();
++                values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
++                values.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
++                values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
++                uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
++            }
++            if (uri == null) return false;
++            try (OutputStream out = resolver.openOutputStream(uri, "wt")) {
++                if (out == null) return false;
++                out.write(data);
++            }
++            return true;
++        } catch (Throwable t) {
++            Log.w(TAG, "download write failed: " + name, t);
++            return false;
++        }
++    }
+ }
+diff --git a/scripts/test-abyss-0310b-observability.py b/scripts/test-abyss-0310b-observability.py
+new file mode 100644
+index 0000000..c62c0c5
+--- /dev/null
++++ b/scripts/test-abyss-0310b-observability.py
+@@ -0,0 +1,35 @@
++#!/usr/bin/env python3
++"""Abyss Stream 0.3.10b: evidence for slow lives, black previews and unexpected closes."""
++from pathlib import Path
++
++r = Path(__file__).resolve().parents[1]
++java = r / "obs-studio/frontend/cmake/android/java/com/obsproject/studio"
++diag = (java / "ObsCrashDiag.java").read_text()
++app = (r / "obs-studio/frontend/OBSApp.cpp").read_text()
++
++# Performance samples: thermal state, battery, memory, own PSS; flushed to Downloads.
++assert "startMonitor(app);" in diag
++assert "getCurrentThermalStatus()" in diag
++assert "Intent.ACTION_BATTERY_CHANGED" in diag
++assert "Debug.getPss()" in diag
++assert "ABYSS_STREAM_desempenho.txt" in diag
++assert "MONITOR_INTERVAL_MS = 15000L" in diag
++
++# OBS log mirrored to Downloads: found under obs-studio/logs, tail only, rewritten in place.
++assert '"logs".equals(kid.getName()) && "obs-studio".equals(dir.getName())' in diag
++assert "ABYSS_STREAM_log_" in diag
++assert "MAX_LOG_BYTES = 1500000" in diag
++assert 'resolver.openOutputStream(uri, "wt")' in diag
++assert "private static boolean writeDownload(Context app, String name, byte[] data, boolean overwrite)" in diag
++
++# The monitor thread can never take the app down.
++assert "monitor.setDaemon(true);" in diag
++assert "catch (Throwable t) {\n                        Log.w(TAG, \"monitor tick failed\", t);" in diag
++
++# Preview visibility: say which window covers the preview, only when the state changes.
++assert "const QWidget *coverer = nullptr;" in app
++assert "coverer = w;" in app
++assert "static bool lastCovered = false;" in app
++assert "[POCO-preview] previa %s; janela que cobre: %s '%s'" in app
++
++print("PASS Abyss Stream 0.3.10b: performance samples, OBS log mirror, preview cover log")
