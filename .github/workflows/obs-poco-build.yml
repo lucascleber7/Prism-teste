@@ -1,4 +1,4 @@
-name: Abyss Stream 0.3.7 - Editor mobile e auditoria
+name: Abyss Stream 0.3.9 - Correcoes de codecs, captura e editor touch
 
 on:
   push:
@@ -45,7 +45,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Keee7/OBS-for-Android
-          ref: main
+          # Pinned: the patch series is built against this exact upstream commit.
+          # Upstream main has since removed android-shell/ (debug keystore) and changed files we patch.
+          ref: b56c2bd6f14a5d178188ed2aa3d143c94a6c504d
           fetch-depth: 0
 
       - name: Apply OBS POCO X7 Pro consolidated improvements
@@ -121,6 +123,11 @@ jobs:
             -o "$RUNNER_TEMP/abyss-stream-touch-editor-037.patch"
           git apply --check "$RUNNER_TEMP/abyss-stream-touch-editor-037.patch"
           git apply "$RUNNER_TEMP/abyss-stream-touch-editor-037.patch"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/lucascleber7/Prism-teste/obs-poco-x7-pro-android-v1/build/abyss-stream-039-fixes.patch \
+            -o "$RUNNER_TEMP/abyss-stream-039-fixes.patch"
+          git apply --check "$RUNNER_TEMP/abyss-stream-039-fixes.patch"
+          git apply "$RUNNER_TEMP/abyss-stream-039-fixes.patch"
           git diff --check
           echo "Merged OBS Android code with POCO/Pad6 custom code."
 
@@ -140,6 +147,7 @@ jobs:
           python3 scripts/test-poco-035-alpha-and-quick-actions.py
           python3 scripts/test-poco-properties-window-036.py
           python3 scripts/test-abyss-touch-editor-037.py
+          python3 scripts/test-abyss-039-fixes.py
           python3 scripts/test-poco-three-video-paths.py
           python3 obs-studio/plugins/obs-outputs/tests/rtmp-dbr-test.py
 
