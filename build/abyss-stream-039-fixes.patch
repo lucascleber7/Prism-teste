@@ -1,9 +1,9 @@
 diff --git a/ABYSS_STREAM_AUDITORIA_039.md b/ABYSS_STREAM_AUDITORIA_039.md
 new file mode 100644
-index 0000000..5f7a485
+index 0000000..51a9a4c
 --- /dev/null
 +++ b/ABYSS_STREAM_AUDITORIA_039.md
-@@ -0,0 +1,34 @@
+@@ -0,0 +1,35 @@
 +# Abyss Stream 0.3.9: correções sobre a 0.3.7/0.3.8
 +
 +A 0.3.8 foi um reempacotamento por smali do APK 0.3.7. A 0.3.9 volta a ser compilada a partir do código-fonte e
@@ -13,8 +13,9 @@ index 0000000..5f7a485
 +- **Codecs:** `ObsCodecCapabilities` enumera os codecs em um único ponto. Uma falha ou lista vazia nunca é gravada no
 +  cache (o hotfix 0.3.8 gravava uma lista vazia e desligava o encoder de hardware até reiniciar o app). Se a lista
 +  normal falhar, tenta a lista de compatibilidade entrada por entrada. O problema aparece no relatório do dispositivo.
-+- **Captura de tela:** se a continuação da projeção falhar, o serviço registra o erro, mostra um aviso ao usuário,
-+  libera o primeiro plano e para. Antes a falha era só um log.
++- **Captura de tela:** toda falha ao iniciar a captura (serviço que não sobe de tipo, falha ao iniciar o serviço,
++  token nulo ou exceção ao trocar o token, exceção na continuação) agora mostra um aviso ao usuário, além do log.
++  Antes eram só logs, e o hotfix 0.3.8 só protegia um ponto que o código já cobria.
 +- **Mídia no Android 13+:** declara e pede `READ_MEDIA_IMAGES/VIDEO/AUDIO`. Sem elas, fontes de imagem, vídeo e áudio
 +  apontando para arquivos em armazenamento compartilhado podem não ser lidas.
 +- **Janela de propriedades:** o botão de prévia de transição fica oculto no Android, onde a prévia embutida está
@@ -228,7 +229,7 @@ index 827b7a8..744e97a 100644
              return new int[0];
          }
 diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsForegroundService.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsForegroundService.java
-index a0b2007..644a00e 100755
+index a0b2007..49b7262 100755
 --- a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsForegroundService.java
 +++ b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsForegroundService.java
 @@ -46,6 +46,7 @@ import android.os.IBinder;
@@ -239,13 +240,17 @@ index a0b2007..644a00e 100755
  
  public final class ObsForegroundService extends Service {
      private static final String TAG = "OBS-keepalive";
-@@ -211,6 +212,17 @@ public final class ObsForegroundService extends Service {
+@@ -211,6 +212,21 @@ public final class ObsForegroundService extends Service {
          Log.i(TAG, "onCreate #" + createdCount + " " + describe());
      }
  
++    static final String CAPTURE_FAILED_MESSAGE =
++        "A captura de tela não iniciou. Toque em Compartilhar tela e tente de novo.";
++
 +    /** Tells the user why a capture request was dropped instead of failing silently. */
-+    private void tellUser(final String message) {
-+        final Context app = getApplicationContext();
++    static void tellUser(Context ctx, final String message) {
++        if (ctx == null) return;
++        final Context app = ctx.getApplicationContext();
 +        new Handler(Looper.getMainLooper()).post(new Runnable() {
 +            @Override
 +            public void run() {
@@ -257,7 +262,7 @@ index a0b2007..644a00e 100755
      @Override
      public int onStartCommand(Intent it, int flags, int startId) {
          final String state = (it != null) ? it.getStringExtra(EXTRA_STATE) : null;
-@@ -229,9 +241,20 @@ public final class ObsForegroundService extends Service {
+@@ -229,9 +245,20 @@ public final class ObsForegroundService extends Service {
          pendingAfterPromote = null;
          if (pending != null && promoted) {
              Log.i(TAG, "投影档已落定，放行等它的令牌交换");
@@ -267,18 +272,34 @@ index a0b2007..644a00e 100755
 +            } catch (RuntimeException e) {
 +                lastError = "Projection continuation failed: " + e;
 +                Log.e(TAG, lastError, e);
-+                tellUser("A captura de tela não iniciou (" + e.getClass().getSimpleName()
-+                         + "). Toque em Compartilhar tela e tente de novo.");
++                tellUser(getApplicationContext(), "A captura de tela não iniciou ("
++                         + e.getClass().getSimpleName() + "). Toque em Compartilhar tela e tente de novo.");
 +                releaseProjectionForeground(getApplicationContext());
 +                stopSelf(startId);
 +                return START_NOT_STICKY;
 +            }
          } else if (pending != null) {
              Log.e(TAG, "改档失败，等它的令牌交换直接作废");
-+            tellUser("A captura de tela foi cancelada: o Android não liberou o serviço em primeiro plano.");
++            tellUser(getApplicationContext(), CAPTURE_FAILED_MESSAGE);
              releaseProjectionForeground(getApplicationContext());
          }
          return START_STICKY;
+@@ -353,6 +380,7 @@ public final class ObsForegroundService extends Service {
+                         after.run();
+                     else {
+                         Log.e(TAG, "改投影档失败，令牌不换了：" + lastError);
++                        tellUser(svc.getApplicationContext(), CAPTURE_FAILED_MESSAGE);
+                         releaseProjectionForeground(svc.getApplicationContext());
+                     }
+                 }
+@@ -367,6 +395,7 @@ public final class ObsForegroundService extends Service {
+             pendingAfterPromote = null;
+             startedForProjection = false;
+             Log.e(TAG, "为投影起保活服务失败，令牌不换了：" + lastError);
++            tellUser(ctx, CAPTURE_FAILED_MESSAGE);
+             releaseProjectionForeground(ctx);
+         }
+     }
 diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsPermissionHost.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsPermissionHost.java
 index 0f2f927..3be2cbc 100755
 --- a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsPermissionHost.java
@@ -318,6 +339,18 @@ index 0f2f927..3be2cbc 100755
      private static String granted(Context ctx, String perm) {
          if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M)
              return "n/a";
+diff --git a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsProjectionHost.java b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsProjectionHost.java
+index bfa877d..762c398 100755
+--- a/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsProjectionHost.java
++++ b/obs-studio/frontend/cmake/android/java/com/obsproject/studio/ObsProjectionHost.java
+@@ -797,6 +797,7 @@ public final class ObsProjectionHost extends Activity {
+         projection = null;
+         wantProjection = false;
+         Log.w(TAG, "投影作废（" + why + "），交回保活服务的处置权");
++        ObsForegroundService.tellUser(app, ObsForegroundService.CAPTURE_FAILED_MESSAGE);
+         ObsForegroundService.releaseProjectionForeground(app);
+     }
+ }
 diff --git a/obs-studio/frontend/dialogs/OBSBasicProperties.cpp b/obs-studio/frontend/dialogs/OBSBasicProperties.cpp
 index 3cd8c6b..2c60bc1 100755
 --- a/obs-studio/frontend/dialogs/OBSBasicProperties.cpp
@@ -410,10 +443,10 @@ index 51df83a..3bb0ed4 100755
  				  saveGeometry().toBase64().constData());
 diff --git a/scripts/test-abyss-039-fixes.py b/scripts/test-abyss-039-fixes.py
 new file mode 100644
-index 0000000..9b559c4
+index 0000000..2b6e4db
 --- /dev/null
 +++ b/scripts/test-abyss-039-fixes.py
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,69 @@
 +#!/usr/bin/env python3
 +"""Abyss Stream 0.3.9: static regression checks for the fixes made on top of 0.3.7."""
 +import re
@@ -439,12 +472,17 @@ index 0000000..9b559c4
 +assert re.search(r"if \(all != null && all\.length > 0\) \{\s+codecs = all;", codec)
 +assert '"\\nAviso: " + problem' in codec
 +
-+# Screen capture failure: caught, reported to the user, service stopped.
++# Screen capture failure: every failure path tells the user; a continuation exception is still caught.
++projection = (java / "ObsProjectionHost.java").read_text()
 +assert "import android.widget.Toast;" in service
-+assert "private void tellUser(final String message)" in service
-+assert service.count("tellUser(") >= 3
++assert "static void tellUser(Context ctx, final String message)" in service
++assert service.count("CAPTURE_FAILED_MESSAGE") >= 4
 +assert re.search(r"try \{\s+pending\.run\(\);\s+\} catch \(RuntimeException e\)", service)
 +assert "return START_NOT_STICKY;" in service
++give_up = projection.index("private static synchronized void giveUpToken")
++assert "ObsForegroundService.tellUser(app, ObsForegroundService.CAPTURE_FAILED_MESSAGE);" in projection[give_up:give_up + 600]
++ensure = service.index("public static synchronized void ensureProjectionForeground")
++assert service[ensure:ensure + 2400].count("tellUser(") == 2
 +
 +# Android 13+ media permissions: declared and requested.
 +for name in ("READ_MEDIA_IMAGES", "READ_MEDIA_VIDEO", "READ_MEDIA_AUDIO"):
@@ -557,7 +595,7 @@ index 4563f39..c1699ad 100644
  root=Path(__file__).resolve().parents[1]
  s=(root/"obs-studio/frontend/dialogs/OBSBasicProperties.cpp").read_text()
  manifest=(root/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
--assert 'android:versionCode="34"' in manifest
+-assert 'android:versionCode="36"' in manifest
 -assert 'android:versionName="0.3.7-abyss"' in manifest
 +assert 'android:versionCode="36"' in manifest
 +assert 'android:versionName="0.3.9-abyss"' in manifest
