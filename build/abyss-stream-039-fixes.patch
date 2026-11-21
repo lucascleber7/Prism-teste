@@ -595,7 +595,7 @@ index 4563f39..c1699ad 100644
  root=Path(__file__).resolve().parents[1]
  s=(root/"obs-studio/frontend/dialogs/OBSBasicProperties.cpp").read_text()
  manifest=(root/"obs-studio/frontend/cmake/android/AndroidManifest.xml").read_text()
--assert 'android:versionCode="36"' in manifest
+-assert 'android:versionCode="34"' in manifest
 -assert 'android:versionName="0.3.7-abyss"' in manifest
 +assert 'android:versionCode="36"' in manifest
 +assert 'android:versionName="0.3.9-abyss"' in manifest
