@@ -1,0 +1,13 @@
+services:
+  live:
+    build: .
+    env_file: .env
+    # Volta sozinho se o servidor reiniciar ou o processo cair.
+    restart: unless-stopped
+    # O Chromium precisa de mais memória compartilhada que os 64 MB padrão do Docker.
+    shm_size: "1gb"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,17 @@
+{
+  "name": "tiktok-live-game",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cabo de Guerra da Live: jogo de navegador controlado pelos comentarios, curtidas, presentes e seguidores de uma live do TikTok",
+  "scripts": {
+    "demo": "node server.js --demo",
+    "start": "node server.js",
+    "test": "node test/run-tests.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "tiktok-live-connector": "^2.5.0"
+  }
+}
