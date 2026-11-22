@@ -34,6 +34,17 @@ jobs:
           (cd /opt/abyss-live && sudo docker compose logs --no-color > "$GITHUB_WORKSPACE/out/container.log" 2>&1; sudo docker compose ps)
           ls -l /opt/abyss-live/.env | tee out/env-perm.txt
           sudo grep -E "^(WIDTH|HEIGHT|FPS|DEMO|TIKTOK_USER)=" /opt/abyss-live/.env | tee out/env-values.txt
+      - name: Atualização automática (sem versão nova, e com versão nova)
+        run: |
+          sudo test -f /etc/cron.d/abyss-live && echo "cron instalado: $(sudo cat /etc/cron.d/abyss-live)"
+          sudo bash /opt/abyss-live/deploy/atualizar.sh
+          sudo grep -c "versão nova" /var/log/abyss-live-update.log 2>/dev/null | tee out/updates-before.txt || echo 0 > out/updates-before.txt
+          echo 0000000000000000000000000000000000000000 | sudo tee /opt/abyss-live/.versao > /dev/null
+          sudo bash /opt/abyss-live/deploy/atualizar.sh
+          sudo cat /var/log/abyss-live-update.log | tee out/update.log
+          sudo grep -c "^TIKTOK_USER=perfil_de_teste$" /opt/abyss-live/.env | tee out/env-kept.txt
+          sleep 20
+          (cd /opt/abyss-live && sudo docker compose ps --format '{{.State}}') | tee out/state-after-update.txt
       - name: Conferir
         run: |
           frames=$(ffprobe -v error -select_streams v -count_packets -show_entries stream=nb_read_packets -of csv=p=0 out/recebido.flv || echo 0)
@@ -46,8 +57,14 @@ jobs:
             echo "- chave aparecendo nos logs: $leaked"
             echo "- .env: $(cat out/env-perm.txt | awk '{print $1, $3}')"
             echo "- qualidade escolhida: $(tr '\n' ' ' < out/env-values.txt)"
+            echo "- atualização sem versão nova não fez nada: $(cat out/updates-before.txt) troca(s)"
+            echo "- atualização com versão nova: $(grep -c 'atualizado e religado' out/update.log) religada(s); @ mantido: $(cat out/env-kept.txt); estado: $(cat out/state-after-update.txt)"
             echo '```'; tail -6 out/setup.log; grep -E "frame=.*speed" out/container.log | tail -1; echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -q "^0$" out/updates-before.txt
+          grep -q "atualizado e religado" out/update.log
+          grep -q "^1$" out/env-kept.txt
+          grep -q "running" out/state-after-update.txt
           grep -q "live ligada" out/setup.log
           grep -q "^-rw------- .* root" out/env-perm.txt
           grep -q "^FPS=30$" out/env-values.txt
