@@ -29,7 +29,15 @@ keep() {
     sleep "$wait"; wait=$((wait < 60 ? wait * 2 : 60))
   done
 }
-trap 'log encerrando; command -v termux-wake-unlock > /dev/null && termux-wake-unlock; kill 0' INT TERM
+# Uma cópia só: duas transmitindo com a mesma chave fazem o Restream derrubar uma e outra.
+PIDFILE=logs/live.pid
+if [ -f "$PIDFILE" ] && [ "$(cat "$PIDFILE")" != "$$" ] && kill -0 "$(cat "$PIDFILE")" 2> /dev/null \
+   && grep -q "stream-termux" "/proc/$(cat "$PIDFILE")/cmdline" 2> /dev/null; then
+  log "já existe uma live rodando (pid $(cat "$PIDFILE")); esta cópia não vai iniciar"
+  exit 0
+fi
+echo $$ > "$PIDFILE"
+trap 'trap - INT TERM; log encerrando; command -v termux-wake-unlock > /dev/null && termux-wake-unlock; rm -f "$PIDFILE"; kill -KILL 0' INT TERM
 
 # Sem isto o Android pode pausar o Termux com a tela apagada.
 command -v termux-wake-lock > /dev/null && termux-wake-lock && log "wake-lock ativo"

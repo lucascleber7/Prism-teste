@@ -10,18 +10,23 @@ PIDFILE=$APP/logs/live.pid
 mkdir -p logs
 
 stop_live() {
-  if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2> /dev/null; then
-    kill -TERM -- "-$(cat "$PIDFILE")" 2> /dev/null || kill "$(cat "$PIDFILE")"
-    echo "== live parada"
-  else
-    echo "== a live não estava rodando"
-  fi
+  # Para todas as cópias do lançador (cada uma é líder do próprio grupo de processos) e o que elas abriram.
+  local found=0 p
+  for p in $(ps -eo pid,args | awk '/[s]tream\/stream-termux\.sh/ {print $1}'); do
+    found=1
+    kill -TERM -- "-$p" 2> /dev/null || kill -TERM "$p" 2> /dev/null
+  done
+  sleep 3
+  for p in $(ps -eo pid,args | awk '/[s]tream\/stream-termux\.sh|[s]tream\/render-node\.js/ {print $1}'); do
+    kill -KILL -- "-$p" 2> /dev/null || kill -KILL "$p" 2> /dev/null
+  done
   rm -f "$PIDFILE"
+  command -v termux-wake-unlock > /dev/null && termux-wake-unlock
+  [ "$found" = 1 ] && echo "== live parada" || echo "== a live não estava rodando"
 }
 start_live() {
   stop_live > /dev/null
-  setsid bash stream/stream-termux.sh < /dev/null > /dev/null 2>&1 &
-  echo $! > "$PIDFILE"
+  setsid bash stream/stream-termux.sh < /dev/null > /dev/null 2>&1 &   # o próprio lançador grava logs/live.pid
   sleep 8
   echo "== live ligada (pid $(cat "$PIDFILE")). Log: $APP/logs/live.log"
   tail -5 logs/live.log || true
