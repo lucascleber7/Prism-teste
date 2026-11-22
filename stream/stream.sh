@@ -85,6 +85,9 @@ CHROME_FLAGS=(
   --no-default-browser-check --password-store=basic --disable-dev-shm-usage
 )
 [ "${CHROME_NO_SANDBOX:-0}" = "1" ] && CHROME_FLAGS+=(--no-sandbox)
+# Servidor não tem placa de vídeo: o jogo é 2D e é desenhado no processador. Sem isto o Chromium sobe um
+# "processo de GPU" que, se falhar (visto em ARM), derruba o navegador inteiro. CHROME_GPU=1 volta ao padrão.
+[ "${CHROME_GPU:-0}" = "1" ] || CHROME_FLAGS+=(--disable-gpu --disable-software-rasterizer)
 # O Chromium escreve muitos avisos inofensivos (dbus etc.); só vão para o log com CHROME_LOG=1.
 browser() { if [ "${CHROME_LOG:-0}" = "1" ]; then "$CHROME" "${CHROME_FLAGS[@]}"; else "$CHROME" "${CHROME_FLAGS[@]}" > /dev/null 2>&1; fi; }
 keep navegador browser &

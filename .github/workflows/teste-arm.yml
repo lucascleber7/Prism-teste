@@ -1,0 +1,53 @@
+# Teste em processador ARM de verdade (o mesmo tipo do Oracle grátis), limitado a 2 núcleos e 12 GB:
+# monta a imagem, transmite 60 s em 720p30 para um receptor RTMP local (nada sai da máquina) e reprova
+# se o navegador cair ou se faltarem quadros.
+name: Teste ARM (Oracle gratis)
+on:
+  push:
+    branches: [abyss-live-24h]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  arm:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Montar a imagem
+        run: docker build -t abyss-live:ci .
+      - name: Transmitir 60 s para um receptor local (2 nucleos, 720p30)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg > /dev/null
+          mkdir -p out
+          URL=rtmp://127.0.0.1:1935/live/chave_de_teste
+          ffmpeg -hide_banner -loglevel error -listen 1 -i "$URL" -c copy -t 60 -y out/recebido.flv &
+          sleep 1
+          docker run -d --name live --network host --cpus 2 --memory 12g --shm-size 1g \
+            -e STREAM_URL="$URL" -e DEMO=1 -e WIDTH=720 -e HEIGHT=1280 -e FPS=30 -e VIDEO_BITRATE=3000k abyss-live:ci
+          sleep 45
+          docker stats --no-stream --format 'CPU {{.CPUPerc}} RAM {{.MemUsage}}' live | tee out/uso.txt
+          sleep 35
+          docker logs live > out/container.log 2>&1
+          docker rm -f live
+          wait || true
+          ffmpeg -v error -y -ss 40 -i out/recebido.flv -frames:v 1 out/quadro.png || true
+      - name: Conferir
+        run: |
+          frames=$(ffprobe -v error -select_streams v -count_packets -show_entries stream=nb_read_packets -of csv=p=0 out/recebido.flv || echo 0)
+          crashes=$(grep -c "navegador: parou" out/container.log || true)
+          {
+            echo "### ARM: $(uname -m), $(nproc) nucleos no runner (contêiner limitado a 2)"
+            echo "- quadros recebidos em 60 s: $frames (esperado ~1800)"
+            echo "- quedas do navegador: $crashes"
+            echo "- $(cat out/uso.txt)"
+            echo '```'
+            grep -E "frame=.*speed" out/container.log | tail -2
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          test "$crashes" -eq 0 && test "$frames" -ge 1500
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: teste-arm
+          path: out/
