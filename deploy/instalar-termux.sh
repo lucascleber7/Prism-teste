@@ -32,7 +32,10 @@ case "${1:-}" in
 esac
 
 echo "== pacotes"
-for p in nodejs ffmpeg coreutils; do dpkg -s "$p" > /dev/null 2>&1 || pkg install -y "$p"; done
+# Instala só o que faltar, olhando o COMANDO (não o nome do pacote): quem já tem nodejs-lts continua com ele.
+command -v node > /dev/null || pkg install -y nodejs-lts
+command -v ffmpeg > /dev/null || pkg install -y ffmpeg
+command -v stdbuf > /dev/null || pkg install -y coreutils
 command -v termux-wake-lock > /dev/null || echo "aviso: termux-wake-lock não encontrado (instale o app Termux:API para mais estabilidade)"
 
 echo "== bibliotecas do jogo"
