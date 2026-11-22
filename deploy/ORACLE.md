@@ -3,6 +3,10 @@
 Resultado: uma máquina na nuvem que transmite o jogo para o Restream o tempo todo, em 720×1280 a 30 fps.
 Você precisa do celular com o Termux, do endereço + chave do Restream e do seu @ do TikTok.
 
+## Jeito mais fácil: sem Termux e sem comandos
+
+Ao criar a máquina (passo 3 abaixo), abra **Show advanced options → Management → Initialization script → Paste cloud-init script** e cole o conteúdo de [`oracle-cloud-init.sh`](oracle-cloud-init.sh) com as duas primeiras linhas preenchidas (seu @ e o endereço + chave do Restream). Em **Add SSH keys**, escolha **Generate a key pair for me** e salve a chave privada, só para emergências. Pronto: no primeiro boot a máquina instala tudo sozinha e liga a live. Leva uns 10 minutos.
+
 ## 1. Criar a conta
 
 1. Abra **oracle.com/cloud/free** e toque em **Start for free**.

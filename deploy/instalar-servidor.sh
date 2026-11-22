@@ -49,7 +49,7 @@ else
     echo "VIDEO_BITRATE=${Q[3]}"
     echo "X264_PRESET=veryfast"
     echo "EULER_API_KEY=${EULER_API_KEY:-}"
-    echo "DEMO=0"
+    echo "DEMO=${DEMO:-0}"
   } > .env
   chmod 600 .env
   echo "== .env gravado (só o root lê)"
